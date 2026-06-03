@@ -175,6 +175,7 @@ function collectDom() {
         sidewalkLeftInput: document.getElementById('sidewalkLeftInput'),
         sidewalkRightInput: document.getElementById('sidewalkRightInput'),
         nodeFields: document.getElementById('nodeFields'),
+        pointSelectInput: document.getElementById('pointSelectInput'),
         pointSmoothInput: document.getElementById('pointSmoothInput'),
         pointIndexInput: document.getElementById('pointIndexInput'),
         roundaboutFields: document.getElementById('roundaboutFields'),
@@ -242,6 +243,7 @@ function initThree() {
     dom.canvas.addEventListener('pointermove', onPointerMove);
     dom.canvas.addEventListener('pointerup', onPointerUp);
     dom.canvas.addEventListener('pointerleave', onPointerUp);
+    dom.canvas.addEventListener('dblclick', onDoubleClick);
     window.addEventListener('keydown', onKeyDown);
 }
 
@@ -274,6 +276,22 @@ function initMaterials() {
         transparent: true,
         opacity: 0.42,
         depthWrite: false,
+    });
+    materials.builtRoadPreview = new THREE.MeshBasicMaterial({
+        color: 0x2d8cff,
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+    });
+    materials.dirtyRoadPreview = new THREE.MeshBasicMaterial({
+        color: 0xffd23f,
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
     });
     materials.control = new THREE.MeshStandardMaterial({
         color: 0xffd23f,
@@ -332,6 +350,7 @@ function bindUi() {
         dom.sidewalkRightInput,
     ].forEach((input) => input.addEventListener('input', updateSelectedRoadFromInspector));
 
+    dom.pointSelectInput.addEventListener('change', updateSelectedPointSelectionFromInspector);
     dom.pointSmoothInput.addEventListener('change', updateSelectedPointFromInspector);
 
     [
@@ -499,17 +518,29 @@ function createRoadObjects(road) {
 
 function createRoadHelpers(road) {
     const objects = [];
+    const isSelectedRoad = road.id === state.selectedRoadId;
+    if (isSelectedRoad && road.built && road.builtAxisPoints?.length >= 2) {
+        const previewMaterial = road.buildDirty ? materials.dirtyRoadPreview : materials.builtRoadPreview;
+        const footprint = buildRibbonMesh(road.builtAxisPoints, road.width + 1.2, 0.24, previewMaterial);
+        footprint.name = `${road.name} generated 3D road footprint`;
+        footprint.userData = { roadId: road.id, helper: true, kind: 'built-road-preview' };
+        footprint.renderOrder = 2;
+        objects.push(footprint);
+    }
+
     const splineAxis = sampleRoadAxis(road);
     if (splineAxis.length >= 2) {
-        const color = road.id === state.selectedRoadId
+        const color = isSelectedRoad
             ? (road.buildDirty ? 0xffd23f : 0x2d8cff)
             : (road.built ? 0x60717e : 0x17c3b2);
         const splineLine = buildLine(splineAxis, color, 1.42);
         splineLine.name = `${road.name} editable spline`;
+        splineLine.userData = { roadId: road.id, helper: true, kind: 'editable-spline' };
+        splineLine.renderOrder = 3;
         objects.push(splineLine);
     }
     road.points.forEach((point, index) => {
-        const selected = road.id === state.selectedRoadId && index === state.selectedPointIndex;
+        const selected = isSelectedRoad && index === state.selectedPointIndex;
         const handle = new THREE.Mesh(
             new THREE.SphereGeometry(selected ? 2.8 : 2.1, 18, 12),
             selected ? materials.controlSelected : materials.control,
@@ -517,6 +548,7 @@ function createRoadHelpers(road) {
         handle.position.set(point.x, 1.8, point.z);
         handle.name = `${road.name} point ${index + 1}`;
         handle.userData = { roadId: road.id, pointIndex: index, helper: true };
+        handle.renderOrder = 4;
         objects.push(handle);
     });
     return objects;
@@ -683,7 +715,7 @@ function buildLine(points, color, y = 1.1) {
     points.forEach((point) => positions.push(point.x, y, point.z));
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    return new THREE.Line(geometry, new THREE.LineBasicMaterial({ color }));
+    return new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, depthTest: false }));
 }
 
 function sampleRoadAxis(road) {
@@ -706,6 +738,26 @@ function sampleRoadAxis(road) {
                 : { x: THREE.MathUtils.lerp(a.x, b.x, t), z: THREE.MathUtils.lerp(a.z, b.z, t) };
             out.push(point);
         }
+    }
+
+    return out;
+}
+
+function sampleRoadSegment(points, index) {
+    const a = points[index];
+    const b = points[index + 1];
+    if (!a || !b) return [];
+    const segmentLength = distance2(a, b);
+    const shouldCurve = a.smooth !== 'corner' || b.smooth !== 'corner';
+    const steps = shouldCurve ? Math.max(6, Math.ceil(segmentLength / 8)) : 1;
+    const out = [];
+
+    for (let step = 0; step <= steps; step += 1) {
+        const t = step / steps;
+        const point = shouldCurve
+            ? hermitePoint(points, index, t)
+            : { x: THREE.MathUtils.lerp(a.x, b.x, t), z: THREE.MathUtils.lerp(a.z, b.z, t) };
+        out.push(point);
     }
 
     return out;
@@ -876,6 +928,18 @@ function onPointerUp() {
     }
 }
 
+function onDoubleClick(event) {
+    if (state.mode !== 'select' || isEditableTarget(event.target)) return;
+    event.preventDefault();
+    const ground = getGroundPoint(event);
+    if (!ground) return;
+
+    const hit = findNearestRoadSegment(ground, 12);
+    if (!hit) return;
+
+    insertRoadPoint(hit.road, hit.segmentIndex, ground);
+}
+
 function onKeyDown(event) {
     if (isEditableTarget(event.target)) return;
     if (event.key === 'Escape') {
@@ -890,6 +954,7 @@ function onKeyDown(event) {
         setStatus('Started a new draw road chain.');
     }
     if ((event.key === 'Backspace' || event.key === 'Delete') && hasSelection()) {
+        event.preventDefault();
         deleteSelected();
     }
 }
@@ -935,6 +1000,20 @@ function addDrawPoint(point) {
         setStatus(`${road.name}: ${road.points.length} spline nodes. Press Build 3D to generate the road.`);
     }
     rebuildScene();
+}
+
+function insertRoadPoint(road, segmentIndex, point) {
+    if (!road || segmentIndex < 0 || segmentIndex >= road.points.length - 1) return;
+    const insertIndex = segmentIndex + 1;
+    road.points.splice(insertIndex, 0, {
+        x: point.x,
+        z: point.z,
+        smooth: 'smooth',
+    });
+    rebuildGeneratedRoadAfterTopologyChange(road);
+    selectRoad(road.id, insertIndex);
+    rebuildScene();
+    setStatus(`${road.name}: inserted node ${insertIndex + 1}. ${road.built ? '3D road rebuilt.' : 'Press Build 3D to generate the road.'}`);
 }
 
 function createDefaultRoad(point) {
@@ -1002,6 +1081,29 @@ function findNearestRoad(point) {
     return best;
 }
 
+function findNearestRoadSegment(point, thresholdM) {
+    let best = null;
+    state.roads.forEach((road) => {
+        const points = normalizeRoadPoints(road.points);
+        if (points.length < 2) return;
+        for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+            const segment = sampleRoadSegment(points, segmentIndex);
+            for (let i = 1; i < segment.length; i += 1) {
+                const candidate = nearestPointOnSegment(point, segment[i - 1], segment[i]);
+                if (candidate.distance <= thresholdM && (!best || candidate.distance < best.distance)) {
+                    best = {
+                        road,
+                        segmentIndex,
+                        distance: candidate.distance,
+                        point: candidate.point,
+                    };
+                }
+            }
+        }
+    });
+    return best;
+}
+
 function findNearestRoundabout(point) {
     let best = null;
     state.roundabouts.forEach((roundabout) => {
@@ -1020,13 +1122,25 @@ function findNearestRoundabout(point) {
 }
 
 function distancePointToSegment(point, a, b) {
+    return nearestPointOnSegment(point, a, b).distance;
+}
+
+function nearestPointOnSegment(point, a, b) {
     const vx = b.x - a.x;
     const vz = b.z - a.z;
     const wx = point.x - a.x;
     const wz = point.z - a.z;
     const len2 = vx * vx + vz * vz;
     const t = len2 <= EPS ? 0 : THREE.MathUtils.clamp((wx * vx + wz * vz) / len2, 0, 1);
-    return Math.hypot(point.x - (a.x + vx * t), point.z - (a.z + vz * t));
+    const nearest = {
+        x: a.x + vx * t,
+        z: a.z + vz * t,
+    };
+    return {
+        point: nearest,
+        t,
+        distance: Math.hypot(point.x - nearest.x, point.z - nearest.z),
+    };
 }
 
 function syncInspector() {
@@ -1038,13 +1152,15 @@ function syncInspector() {
 
     dom.roadFields.hidden = !road;
     dom.roundaboutFields.hidden = !roundabout;
-    dom.nodeFields.hidden = !selectedPoint;
+    dom.nodeFields.hidden = !road || road.points.length === 0;
     dom.deleteSelectedBtn.disabled = !road && !roundabout;
     dom.buildRoadBtn.disabled = !road || road.points.length < 2;
     dom.buildSelectedRoadBtn.disabled = !road || road.points.length < 2;
+    dom.pointSmoothInput.disabled = !selectedPoint;
 
     if (roundabout) {
         dom.selectionState.textContent = roundabout.name;
+        dom.deleteSelectedBtn.textContent = 'Delete selected roundabout';
         dom.roundaboutNameInput.value = roundabout.name;
         dom.roundaboutRadiusInput.value = formatNumber(roundabout.radius);
         dom.roundaboutWidthInput.value = formatNumber(roundabout.width);
@@ -1054,10 +1170,12 @@ function syncInspector() {
 
     if (!road) {
         dom.selectionState.textContent = 'none';
+        dom.deleteSelectedBtn.textContent = 'Delete selected';
         return;
     }
 
     dom.selectionState.textContent = selectedPoint ? `${road.name} node ${state.selectedPointIndex + 1}` : road.name;
+    dom.deleteSelectedBtn.textContent = selectedPoint ? 'Delete selected node' : 'Delete selected road';
     dom.roadNameInput.value = road.name;
     dom.roadWidthInput.value = formatNumber(road.width);
     dom.roadLanesInput.value = String(road.lanes);
@@ -1065,10 +1183,33 @@ function syncInspector() {
     dom.sidewalkWidthInput.value = formatNumber(road.sidewalkWidth);
     dom.sidewalkLeftInput.checked = !!road.sidewalkLeft;
     dom.sidewalkRightInput.checked = !!road.sidewalkRight;
+    syncPointSelect(road);
     if (selectedPoint) {
         dom.pointSmoothInput.value = selectedPoint.smooth || 'corner';
         dom.pointIndexInput.value = `${state.selectedPointIndex + 1} / ${road.points.length}`;
+    } else {
+        dom.pointSmoothInput.value = 'corner';
+        dom.pointIndexInput.value = '-';
     }
+}
+
+function syncPointSelect(road) {
+    const currentValue = Number.isInteger(state.selectedPointIndex) ? String(state.selectedPointIndex) : '';
+    dom.pointSelectInput.replaceChildren();
+
+    const roadLevel = document.createElement('option');
+    roadLevel.value = '';
+    roadLevel.textContent = 'Road level';
+    dom.pointSelectInput.append(roadLevel);
+
+    road.points.forEach((point, index) => {
+        const option = document.createElement('option');
+        option.value = String(index);
+        option.textContent = `Node ${index + 1} (${formatSmoothMode(point.smooth)})`;
+        dom.pointSelectInput.append(option);
+    });
+
+    dom.pointSelectInput.value = currentValue;
 }
 
 function updateSelectedRoadFromInspector() {
@@ -1093,6 +1234,15 @@ function updateSelectedPointFromInspector() {
     markRoadDirty(road);
     rebuildScene();
     setStatus(`${road.name} node ${state.selectedPointIndex + 1}: ${formatSmoothMode(point.smooth)}. Press Build 3D to update geometry.`);
+}
+
+function updateSelectedPointSelectionFromInspector() {
+    const road = getSelectedRoad();
+    if (!road) return;
+    const nextIndex = dom.pointSelectInput.value === '' ? null : Number(dom.pointSelectInput.value);
+    selectRoad(road.id, Number.isInteger(nextIndex) ? nextIndex : null);
+    rebuildScene();
+    setStatus(Number.isInteger(nextIndex) ? `Selected ${road.name} node ${nextIndex + 1}.` : `Selected ${road.name}.`);
 }
 
 function updateSelectedRoundaboutFromInspector() {
@@ -1130,8 +1280,34 @@ function hasSelection() {
     return !!state.selectedRoadId || !!state.selectedRoundaboutId;
 }
 
+function hasSelectedPoint() {
+    const road = getSelectedRoad();
+    return !!road && Number.isInteger(state.selectedPointIndex) && !!road.points[state.selectedPointIndex];
+}
+
 function markRoadDirty(road) {
     if (!road) return;
+    road.buildDirty = true;
+}
+
+function rebuildGeneratedRoadAfterTopologyChange(road) {
+    if (!road) return;
+    const wasBuilt = !!road.built;
+    road.points = normalizeRoadPoints(road.points);
+    if (road.points.length < 2) {
+        road.built = false;
+        road.builtAxisPoints = [];
+        road.buildDirty = road.points.length > 0;
+        return;
+    }
+
+    if (wasBuilt) {
+        road.builtAxisPoints = sampleRoadAxis(road);
+        road.built = true;
+        road.buildDirty = false;
+        return;
+    }
+
     road.buildDirty = true;
 }
 
@@ -1154,11 +1330,36 @@ function buildSelectedRoad() {
 }
 
 function deleteSelected() {
+    if (hasSelectedPoint()) {
+        deleteSelectedPoint();
+        return;
+    }
     if (state.selectedRoundaboutId) {
         deleteSelectedRoundabout();
         return;
     }
     deleteSelectedRoad();
+}
+
+function deleteSelectedPoint() {
+    const road = getSelectedRoad();
+    if (!road || !Number.isInteger(state.selectedPointIndex)) return;
+    const removedIndex = state.selectedPointIndex;
+    road.points.splice(removedIndex, 1);
+
+    if (road.points.length === 0) {
+        deleteSelectedRoad();
+        return;
+    }
+
+    state.selectedPointIndex = Math.min(removedIndex, road.points.length - 1);
+    rebuildGeneratedRoadAfterTopologyChange(road);
+    rebuildScene();
+
+    const nodeText = road.points.length === 1
+        ? 'The road needs one more node before Build 3D.'
+        : (road.built ? '3D road rebuilt as one continuous spline.' : 'Spline rebuilt as one continuous chain.');
+    setStatus(`${road.name}: deleted node ${removedIndex + 1}. ${nodeText}`);
 }
 
 function deleteSelectedRoad() {
