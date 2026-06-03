@@ -358,6 +358,10 @@ input[type="checkbox"] {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
+.field-grid.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .inline-actions,
 .toggle-row {
     display: flex;
@@ -378,6 +382,18 @@ input[type="checkbox"] {
     align-items: center;
     gap: 7px;
     margin: 0 0 10px;
+}
+
+.node-fields {
+    padding: 8px 0 2px;
+    border-top: 1px solid var(--road-line);
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
 }
 
 .status-bar {
@@ -586,6 +602,10 @@ input[type="checkbox"] {
 
     .panel-section {
         padding: 12px;
+    }
+
+    .field-grid.three {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .compass {

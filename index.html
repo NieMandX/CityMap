@@ -53,6 +53,7 @@
             </nav>
 
             <nav class="toolbar-group toolbar-actions" aria-label="Actions">
+                <button class="action-btn" type="button" id="buildRoadBtn">Build 3D</button>
                 <button class="action-btn" type="button" id="exportJsonBtn">Export JSON</button>
                 <button class="action-btn primary" type="button" id="exportGlbBtn">Export GLB</button>
                 <button class="action-btn danger" type="button" id="clearBtn">Clear</button>
@@ -160,38 +161,76 @@
 
             <section class="panel-section">
                 <div class="section-title">
-                    <span>Selected road</span>
+                    <span>Selected object</span>
                     <small id="selectionState">Road 1</small>
                 </div>
-                <label>
-                    <span>Name</span>
-                    <input id="roadNameInput" type="text" value="Main road">
-                </label>
-                <div class="field-grid two">
+                <div id="roadFields">
                     <label>
-                        <span>Width m</span>
-                        <input id="roadWidthInput" type="number" min="2" max="80" step="0.5" value="18">
+                        <span>Name</span>
+                        <input id="roadNameInput" type="text" value="Main road">
                     </label>
-                    <label>
-                        <span>Lanes</span>
-                        <input id="roadLanesInput" type="number" min="1" max="8" step="1" value="4">
-                    </label>
+                    <div class="field-grid two">
+                        <label>
+                            <span>Width m</span>
+                            <input id="roadWidthInput" type="number" min="2" max="80" step="0.5" value="18">
+                        </label>
+                        <label>
+                            <span>Lanes</span>
+                            <input id="roadLanesInput" type="number" min="1" max="8" step="1" value="4">
+                        </label>
+                    </div>
+                    <div class="field-grid two">
+                        <label>
+                            <span>Lane m</span>
+                            <input id="laneWidthInput" type="number" min="2" max="5" step="0.1" value="3.5">
+                        </label>
+                        <label>
+                            <span>Sidewalk m</span>
+                            <input id="sidewalkWidthInput" type="number" min="0" max="8" step="0.25" value="2">
+                        </label>
+                    </div>
+                    <div class="toggle-row">
+                        <label><input id="sidewalkLeftInput" type="checkbox" checked> Left sidewalk</label>
+                        <label><input id="sidewalkRightInput" type="checkbox" checked> Right sidewalk</label>
+                    </div>
+                    <div class="field-grid two node-fields" id="nodeFields" hidden>
+                        <label>
+                            <span>Node smoothing</span>
+                            <select id="pointSmoothInput">
+                                <option value="corner">Corner</option>
+                                <option value="smooth">Smooth</option>
+                                <option value="auto">Auto curve</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Node</span>
+                            <input id="pointIndexInput" type="text" value="-" readonly>
+                        </label>
+                    </div>
+                    <button class="action-btn full primary" type="button" id="buildSelectedRoadBtn">Build / update 3D road</button>
                 </div>
-                <div class="field-grid two">
+
+                <div id="roundaboutFields" hidden>
                     <label>
-                        <span>Lane m</span>
-                        <input id="laneWidthInput" type="number" min="2" max="5" step="0.1" value="3.5">
+                        <span>Name</span>
+                        <input id="roundaboutNameInput" type="text" value="Roundabout">
                     </label>
-                    <label>
-                        <span>Sidewalk m</span>
-                        <input id="sidewalkWidthInput" type="number" min="0" max="8" step="0.25" value="2">
-                    </label>
+                    <div class="field-grid three">
+                        <label>
+                            <span>Radius m</span>
+                            <input id="roundaboutRadiusInput" type="number" min="6" max="180" step="1" value="42">
+                        </label>
+                        <label>
+                            <span>Width m</span>
+                            <input id="roundaboutWidthInput" type="number" min="4" max="60" step="0.5" value="16">
+                        </label>
+                        <label>
+                            <span>Lanes</span>
+                            <input id="roundaboutLanesInput" type="number" min="1" max="6" step="1" value="2">
+                        </label>
+                    </div>
                 </div>
-                <div class="toggle-row">
-                    <label><input id="sidewalkLeftInput" type="checkbox" checked> Left sidewalk</label>
-                    <label><input id="sidewalkRightInput" type="checkbox" checked> Right sidewalk</label>
-                </div>
-                <button class="action-btn full danger" type="button" id="deleteSelectedBtn">Delete selected road</button>
+                <button class="action-btn full danger" type="button" id="deleteSelectedBtn">Delete selected</button>
             </section>
         </aside>
 

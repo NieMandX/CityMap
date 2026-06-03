@@ -15,16 +15,29 @@ const state = {
     snapEnabled: true,
     snapM: 2,
     selectedRoadId: 'road-1',
+    selectedRoundaboutId: null,
     selectedPointIndex: null,
     activeDrawRoadId: null,
     drag: null,
     underlayMode: 'satellite',
     roadSeq: 3,
     roundaboutSeq: 2,
+    profiles: [
+        {
+            id: 'urban-asphalt',
+            name: 'Urban asphalt',
+            asphalt: '#25282b',
+            marking: '#f5f7f8',
+            curb: '#c7c7c2',
+            sidewalk: '#858b8e',
+            textureSet: 'procedural-default',
+        },
+    ],
     roads: [
         {
             id: 'road-1',
             name: 'Main road',
+            profileId: 'urban-asphalt',
             points: [
                 { x: -270, z: -42 },
                 { x: -145, z: -30 },
@@ -39,10 +52,13 @@ const state = {
             sidewalkWidth: 2,
             sidewalkLeft: true,
             sidewalkRight: true,
+            built: true,
+            buildDirty: false,
         },
         {
             id: 'road-2',
             name: 'North approach',
+            profileId: 'urban-asphalt',
             points: [
                 { x: 28, z: 270 },
                 { x: 22, z: 156 },
@@ -55,10 +71,13 @@ const state = {
             sidewalkWidth: 2,
             sidewalkLeft: true,
             sidewalkRight: true,
+            built: true,
+            buildDirty: false,
         },
         {
             id: 'road-3',
             name: 'Ramp',
+            profileId: 'urban-asphalt',
             points: [
                 { x: -6, z: -24 },
                 { x: 28, z: -78 },
@@ -72,6 +91,8 @@ const state = {
             sidewalkWidth: 1.5,
             sidewalkLeft: false,
             sidewalkRight: true,
+            built: true,
+            buildDirty: false,
         },
     ],
     roundabouts: [
@@ -104,6 +125,7 @@ init();
 
 function init() {
     collectDom();
+    normalizeProjectState();
     initThree();
     initMaterials();
     bindUi();
@@ -126,6 +148,8 @@ function collectDom() {
         modeTopChip: document.getElementById('modeTopChip'),
         snapBtn: document.getElementById('snapBtn'),
         gridBtn: document.getElementById('gridBtn'),
+        buildRoadBtn: document.getElementById('buildRoadBtn'),
+        buildSelectedRoadBtn: document.getElementById('buildSelectedRoadBtn'),
         exportJsonBtn: document.getElementById('exportJsonBtn'),
         exportGlbBtn: document.getElementById('exportGlbBtn'),
         clearBtn: document.getElementById('clearBtn'),
@@ -143,12 +167,21 @@ function collectDom() {
         yandexMaptypeInput: document.getElementById('yandexMaptypeInput'),
         loadYandexBtn: document.getElementById('loadYandexBtn'),
         roadNameInput: document.getElementById('roadNameInput'),
+        roadFields: document.getElementById('roadFields'),
         roadWidthInput: document.getElementById('roadWidthInput'),
         roadLanesInput: document.getElementById('roadLanesInput'),
         laneWidthInput: document.getElementById('laneWidthInput'),
         sidewalkWidthInput: document.getElementById('sidewalkWidthInput'),
         sidewalkLeftInput: document.getElementById('sidewalkLeftInput'),
         sidewalkRightInput: document.getElementById('sidewalkRightInput'),
+        nodeFields: document.getElementById('nodeFields'),
+        pointSmoothInput: document.getElementById('pointSmoothInput'),
+        pointIndexInput: document.getElementById('pointIndexInput'),
+        roundaboutFields: document.getElementById('roundaboutFields'),
+        roundaboutNameInput: document.getElementById('roundaboutNameInput'),
+        roundaboutRadiusInput: document.getElementById('roundaboutRadiusInput'),
+        roundaboutWidthInput: document.getElementById('roundaboutWidthInput'),
+        roundaboutLanesInput: document.getElementById('roundaboutLanesInput'),
         statusText: document.getElementById('statusText'),
         coordText: document.getElementById('coordText'),
         objectCount: document.getElementById('objectCount'),
@@ -236,6 +269,12 @@ function initMaterials() {
         color: 0x2d8cff,
         linewidth: 2,
     });
+    materials.selectionRing = new THREE.MeshBasicMaterial({
+        color: 0x2d8cff,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+    });
     materials.control = new THREE.MeshStandardMaterial({
         color: 0xffd23f,
         emissive: 0x332400,
@@ -278,8 +317,10 @@ function bindUi() {
 
     dom.exportJsonBtn.addEventListener('click', exportProjectJson);
     dom.exportGlbBtn.addEventListener('click', exportGlb);
+    dom.buildRoadBtn.addEventListener('click', buildSelectedRoad);
+    dom.buildSelectedRoadBtn.addEventListener('click', buildSelectedRoad);
     dom.clearBtn.addEventListener('click', clearProject);
-    dom.deleteSelectedBtn.addEventListener('click', deleteSelectedRoad);
+    dom.deleteSelectedBtn.addEventListener('click', deleteSelected);
 
     [
         dom.roadNameInput,
@@ -290,6 +331,35 @@ function bindUi() {
         dom.sidewalkLeftInput,
         dom.sidewalkRightInput,
     ].forEach((input) => input.addEventListener('input', updateSelectedRoadFromInspector));
+
+    dom.pointSmoothInput.addEventListener('change', updateSelectedPointFromInspector);
+
+    [
+        dom.roundaboutNameInput,
+        dom.roundaboutRadiusInput,
+        dom.roundaboutWidthInput,
+        dom.roundaboutLanesInput,
+    ].forEach((input) => input.addEventListener('input', updateSelectedRoundaboutFromInspector));
+}
+
+function normalizeProjectState() {
+    state.roads.forEach((road) => {
+        road.profileId ||= state.profiles[0]?.id || 'urban-asphalt';
+        road.points = normalizeRoadPoints(road.points);
+        road.built = road.built !== false;
+        road.buildDirty = !!road.buildDirty;
+        if (road.built && (!Array.isArray(road.builtAxisPoints) || road.builtAxisPoints.length < 2)) {
+            road.builtAxisPoints = sampleRoadAxis(road);
+        }
+    });
+}
+
+function normalizeRoadPoints(points) {
+    return (points || []).map((point, index, list) => ({
+        x: Number(point.x) || 0,
+        z: Number(point.z) || 0,
+        smooth: point.smooth || (index > 0 && index < list.length - 1 ? 'smooth' : 'corner'),
+    }));
 }
 
 function setMode(mode) {
@@ -359,42 +429,50 @@ function rebuildScene() {
 
 function createRoadObjects(road) {
     const objects = [];
-    if (!road.points || road.points.length < 2) return objects;
+    if (!road.built || !road.builtAxisPoints || road.builtAxisPoints.length < 2) return objects;
 
-    const asphalt = buildRibbonMesh(road.points, road.width, 0.05, materials.asphalt);
+    const axisPoints = road.builtAxisPoints;
+    const isSelected = state.selectedRoadId === road.id;
+
+    const asphalt = buildRibbonMesh(axisPoints, road.width, 0.05, materials.asphalt);
     asphalt.name = `${road.name} asphalt`;
+    asphalt.userData = { roadId: road.id, selectable: true, kind: 'road' };
     objects.push(asphalt);
 
     const curbHalf = road.width / 2 + 0.14;
-    const leftCurb = buildRibbonMesh(offsetPolyline(road.points, curbHalf), 0.28, 0.09, materials.curb);
-    const rightCurb = buildRibbonMesh(offsetPolyline(road.points, -curbHalf), 0.28, 0.09, materials.curb);
+    const leftCurb = buildRibbonMesh(offsetPolyline(axisPoints, curbHalf), 0.28, 0.09, materials.curb);
+    const rightCurb = buildRibbonMesh(offsetPolyline(axisPoints, -curbHalf), 0.28, 0.09, materials.curb);
     leftCurb.name = `${road.name} left curb`;
     rightCurb.name = `${road.name} right curb`;
+    leftCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    rightCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
     objects.push(leftCurb, rightCurb);
 
     if (road.sidewalkLeft && road.sidewalkWidth > 0) {
         const sidewalk = buildRibbonMesh(
-            offsetPolyline(road.points, road.width / 2 + road.sidewalkWidth / 2 + 0.42),
+            offsetPolyline(axisPoints, road.width / 2 + road.sidewalkWidth / 2 + 0.42),
             road.sidewalkWidth,
             0.04,
             materials.sidewalk,
         );
         sidewalk.name = `${road.name} left sidewalk`;
+        sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
         objects.push(sidewalk);
     }
     if (road.sidewalkRight && road.sidewalkWidth > 0) {
         const sidewalk = buildRibbonMesh(
-            offsetPolyline(road.points, -road.width / 2 - road.sidewalkWidth / 2 - 0.42),
+            offsetPolyline(axisPoints, -road.width / 2 - road.sidewalkWidth / 2 - 0.42),
             road.sidewalkWidth,
             0.04,
             materials.sidewalk,
         );
         sidewalk.name = `${road.name} right sidewalk`;
+        sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
         objects.push(sidewalk);
     }
 
-    const edgeLeft = buildRibbonMesh(offsetPolyline(road.points, road.width / 2 - 0.45), 0.16, 0.12, materials.marking);
-    const edgeRight = buildRibbonMesh(offsetPolyline(road.points, -road.width / 2 + 0.45), 0.16, 0.12, materials.marking);
+    const edgeLeft = buildRibbonMesh(offsetPolyline(axisPoints, road.width / 2 - 0.45), 0.16, 0.12, materials.marking);
+    const edgeRight = buildRibbonMesh(offsetPolyline(axisPoints, -road.width / 2 + 0.45), 0.16, 0.12, materials.marking);
     edgeLeft.name = `${road.name} left edge line`;
     edgeRight.name = `${road.name} right edge line`;
     objects.push(edgeLeft, edgeRight);
@@ -404,7 +482,7 @@ function createRoadObjects(road) {
         const laneStep = road.width / laneCount;
         for (let i = 1; i < laneCount; i += 1) {
             const offset = -road.width / 2 + laneStep * i;
-            const dashes = buildDashedLineMeshes(offsetPolyline(road.points, offset), 0.13, 4.2, 5.8, 0.14, materials.marking);
+            const dashes = buildDashedLineMeshes(offsetPolyline(axisPoints, offset), 0.13, 4.2, 5.8, 0.14, materials.marking);
             dashes.forEach((dash, index) => {
                 dash.name = `${road.name} lane dash ${i}.${index + 1}`;
                 objects.push(dash);
@@ -412,7 +490,7 @@ function createRoadObjects(road) {
         }
     }
 
-    const centerLine = buildLine(road.points, state.selectedRoadId === road.id ? 0x2d8cff : 0x60717e);
+    const centerLine = buildLine(axisPoints, isSelected ? 0x2d8cff : 0x60717e, 1.16);
     centerLine.name = `${road.name} centerline`;
     objects.push(centerLine);
 
@@ -421,6 +499,15 @@ function createRoadObjects(road) {
 
 function createRoadHelpers(road) {
     const objects = [];
+    const splineAxis = sampleRoadAxis(road);
+    if (splineAxis.length >= 2) {
+        const color = road.id === state.selectedRoadId
+            ? (road.buildDirty ? 0xffd23f : 0x2d8cff)
+            : (road.built ? 0x60717e : 0x17c3b2);
+        const splineLine = buildLine(splineAxis, color, 1.42);
+        splineLine.name = `${road.name} editable spline`;
+        objects.push(splineLine);
+    }
     road.points.forEach((point, index) => {
         const selected = road.id === state.selectedRoadId && index === state.selectedPointIndex;
         const handle = new THREE.Mesh(
@@ -441,16 +528,20 @@ function createRoundaboutObjects(roundabout) {
     const innerR = Math.max(4, roundabout.radius - roundabout.width / 2);
     const ring = buildRingMesh(roundabout.center, innerR, outerR, 0.07, materials.asphalt, 128);
     ring.name = `${roundabout.name} asphalt`;
+    ring.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
     objects.push(ring);
 
     const island = buildDiscMesh(roundabout.center, Math.max(2, innerR - 2.2), 0.08, materials.island, 96);
     island.name = `${roundabout.name} island`;
+    island.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
     objects.push(island);
 
     const innerCurb = buildCircleStrip(roundabout.center, innerR, 0.32, 0.13, materials.curb, 128);
     const outerCurb = buildCircleStrip(roundabout.center, outerR, 0.32, 0.13, materials.curb, 128);
     innerCurb.name = `${roundabout.name} inner curb`;
     outerCurb.name = `${roundabout.name} outer curb`;
+    innerCurb.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
+    outerCurb.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
     objects.push(innerCurb, outerCurb);
 
     const laneCount = Math.max(1, Math.round(roundabout.lanes || 1));
@@ -464,6 +555,12 @@ function createRoundaboutObjects(roundabout) {
                 objects.push(obj);
             });
         }
+    }
+
+    if (state.selectedRoundaboutId === roundabout.id) {
+        const selection = buildCircleStrip(roundabout.center, outerR + 1.8, 0.36, 0.18, materials.selectionRing, 128);
+        selection.name = `${roundabout.name} selection ring`;
+        objects.push(selection);
     }
 
     return objects;
@@ -581,12 +678,67 @@ function buildDashedLineMeshes(points, width, dashM, gapM, y, material) {
     return objects;
 }
 
-function buildLine(points, color) {
+function buildLine(points, color, y = 1.1) {
     const positions = [];
-    points.forEach((point) => positions.push(point.x, 1.1, point.z));
+    points.forEach((point) => positions.push(point.x, y, point.z));
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     return new THREE.Line(geometry, new THREE.LineBasicMaterial({ color }));
+}
+
+function sampleRoadAxis(road) {
+    const points = normalizeRoadPoints(road.points);
+    if (points.length < 2) return points;
+    const out = [];
+
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const a = points[i];
+        const b = points[i + 1];
+        const segmentLength = distance2(a, b);
+        const shouldCurve = a.smooth !== 'corner' || b.smooth !== 'corner';
+        const steps = shouldCurve ? Math.max(6, Math.ceil(segmentLength / 8)) : 1;
+
+        for (let step = 0; step <= steps; step += 1) {
+            if (i > 0 && step === 0) continue;
+            const t = step / steps;
+            const point = shouldCurve
+                ? hermitePoint(points, i, t)
+                : { x: THREE.MathUtils.lerp(a.x, b.x, t), z: THREE.MathUtils.lerp(a.z, b.z, t) };
+            out.push(point);
+        }
+    }
+
+    return out;
+}
+
+function hermitePoint(points, index, t) {
+    const p0 = points[Math.max(0, index - 1)];
+    const p1 = points[index];
+    const p2 = points[index + 1];
+    const p3 = points[Math.min(points.length - 1, index + 2)];
+    const m1 = tangentForPoint(p0, p1, p2);
+    const m2 = tangentForPoint(p1, p2, p3);
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    return {
+        x: h00 * p1.x + h10 * m1.x + h01 * p2.x + h11 * m2.x,
+        z: h00 * p1.z + h10 * m1.z + h01 * p2.z + h11 * m2.z,
+    };
+}
+
+function tangentForPoint(prev, point, next) {
+    if (point.smooth === 'corner') {
+        return { x: 0, z: 0 };
+    }
+    const factor = point.smooth === 'auto' ? 0.32 : 0.5;
+    return {
+        x: (next.x - prev.x) * factor,
+        z: (next.z - prev.z) * factor,
+    };
 }
 
 function getPointNormal(points, index) {
@@ -674,19 +826,25 @@ function onPointerDown(event) {
 
     const hit = findNearestControlPoint(ground, 9);
     if (hit) {
-        state.selectedRoadId = hit.road.id;
-        state.selectedPointIndex = hit.index;
+        selectRoad(hit.road.id, hit.index);
         state.drag = { roadId: hit.road.id, pointIndex: hit.index };
         controls.enabled = false;
         rebuildScene();
-        setStatus(`Dragging ${hit.road.name} point ${hit.index + 1}.`);
+        setStatus(`Dragging ${hit.road.name} node ${hit.index + 1}.`);
+        return;
+    }
+
+    const roundaboutHit = findNearestRoundabout(ground);
+    if (roundaboutHit) {
+        selectRoundabout(roundaboutHit.roundabout.id);
+        rebuildScene();
+        setStatus(`Selected ${roundaboutHit.roundabout.name}.`);
         return;
     }
 
     const roadHit = findNearestRoad(ground);
     if (roadHit) {
-        state.selectedRoadId = roadHit.road.id;
-        state.selectedPointIndex = null;
+        selectRoad(roadHit.road.id, null);
         rebuildScene();
         setStatus(`Selected ${roadHit.road.name}.`);
     }
@@ -706,6 +864,7 @@ function onPointerMove(event) {
     if (!point) return;
     point.x = ground.x;
     point.z = ground.z;
+    markRoadDirty(road);
     rebuildScene();
 }
 
@@ -713,7 +872,7 @@ function onPointerUp() {
     if (state.drag) {
         state.drag = null;
         controls.enabled = true;
-        setStatus('Point updated.');
+        setStatus('Node updated. Press Build 3D to update the generated road.');
     }
 }
 
@@ -722,6 +881,7 @@ function onKeyDown(event) {
     if (event.key === 'Escape') {
         state.selectedPointIndex = null;
         state.activeDrawRoadId = null;
+        state.selectedRoundaboutId = null;
         setMode('select');
         rebuildScene();
     }
@@ -729,8 +889,8 @@ function onKeyDown(event) {
         state.activeDrawRoadId = null;
         setStatus('Started a new draw road chain.');
     }
-    if ((event.key === 'Backspace' || event.key === 'Delete') && state.selectedRoadId) {
-        deleteSelectedRoad();
+    if ((event.key === 'Backspace' || event.key === 'Delete') && hasSelection()) {
+        deleteSelected();
     }
 }
 
@@ -763,14 +923,16 @@ function addDrawPoint(point) {
         road = createDefaultRoad(point);
         state.roads.push(road);
         state.activeDrawRoadId = road.id;
-        state.selectedRoadId = road.id;
-        state.selectedPointIndex = 0;
-        setStatus('First road point placed.');
+        selectRoad(road.id, 0);
+        setStatus('First spline node placed. Add one more point, then Build 3D.');
     } else {
-        road.points.push(point);
-        state.selectedRoadId = road.id;
-        state.selectedPointIndex = road.points.length - 1;
-        setStatus(`${road.name}: ${road.points.length} spline points.`);
+        road.points.push({
+            ...point,
+            smooth: road.points.length > 0 ? 'smooth' : 'corner',
+        });
+        markRoadDirty(road);
+        selectRoad(road.id, road.points.length - 1);
+        setStatus(`${road.name}: ${road.points.length} spline nodes. Press Build 3D to generate the road.`);
     }
     rebuildScene();
 }
@@ -781,26 +943,32 @@ function createDefaultRoad(point) {
     return {
         id: `road-${state.roadSeq}`,
         name: `Road ${state.roadSeq}`,
-        points: [point],
+        profileId: selected?.profileId || state.profiles[0]?.id || 'urban-asphalt',
+        points: [{ ...point, smooth: 'corner' }],
         width: selected?.width || 10,
         lanes: selected?.lanes || 2,
         laneWidth: selected?.laneWidth || 3.5,
         sidewalkWidth: selected?.sidewalkWidth || 2,
         sidewalkLeft: selected?.sidewalkLeft ?? true,
         sidewalkRight: selected?.sidewalkRight ?? true,
+        built: false,
+        buildDirty: true,
+        builtAxisPoints: [],
     };
 }
 
 function addRoundabout(point) {
     state.roundaboutSeq += 1;
-    state.roundabouts.push({
+    const roundabout = {
         id: `roundabout-${state.roundaboutSeq}`,
         name: `Roundabout ${state.roundaboutSeq}`,
         center: point,
         radius: 36,
         width: 14,
         lanes: 2,
-    });
+    };
+    state.roundabouts.push(roundabout);
+    selectRoundabout(roundabout.id);
     rebuildScene();
     setStatus('Roundabout placed.');
 }
@@ -821,13 +989,31 @@ function findNearestControlPoint(point, thresholdM) {
 function findNearestRoad(point) {
     let best = null;
     state.roads.forEach((road) => {
-        if (road.points.length < 2) return;
-        for (let i = 1; i < road.points.length; i += 1) {
-            const distance = distancePointToSegment(point, road.points[i - 1], road.points[i]);
+        const axis = road.built && road.builtAxisPoints?.length >= 2 ? road.builtAxisPoints : sampleRoadAxis(road);
+        if (axis.length < 2) return;
+        for (let i = 1; i < axis.length; i += 1) {
+            const distance = distancePointToSegment(point, axis[i - 1], axis[i]);
             const threshold = Math.max(5, road.width / 2 + 3);
             if (distance <= threshold && (!best || distance < best.distance)) {
                 best = { road, distance };
             }
+        }
+    });
+    return best;
+}
+
+function findNearestRoundabout(point) {
+    let best = null;
+    state.roundabouts.forEach((roundabout) => {
+        const distanceFromCenter = distance2(point, roundabout.center);
+        const outerR = roundabout.radius + roundabout.width / 2;
+        const innerR = Math.max(4, roundabout.radius - roundabout.width / 2);
+        const bandDistance = distanceFromCenter < innerR
+            ? innerR - distanceFromCenter
+            : Math.max(0, distanceFromCenter - outerR);
+        const insideInteractiveDisc = distanceFromCenter <= outerR + 5;
+        if (insideInteractiveDisc && (!best || bandDistance < best.distance)) {
+            best = { roundabout, distance: bandDistance };
         }
     });
     return best;
@@ -845,10 +1031,33 @@ function distancePointToSegment(point, a, b) {
 
 function syncInspector() {
     const road = getSelectedRoad();
-    dom.selectionState.textContent = road ? road.name : 'none';
-    dom.deleteSelectedBtn.disabled = !road;
+    const roundabout = getSelectedRoundabout();
+    const selectedPoint = road && Number.isInteger(state.selectedPointIndex)
+        ? road.points[state.selectedPointIndex]
+        : null;
 
-    if (!road) return;
+    dom.roadFields.hidden = !road;
+    dom.roundaboutFields.hidden = !roundabout;
+    dom.nodeFields.hidden = !selectedPoint;
+    dom.deleteSelectedBtn.disabled = !road && !roundabout;
+    dom.buildRoadBtn.disabled = !road || road.points.length < 2;
+    dom.buildSelectedRoadBtn.disabled = !road || road.points.length < 2;
+
+    if (roundabout) {
+        dom.selectionState.textContent = roundabout.name;
+        dom.roundaboutNameInput.value = roundabout.name;
+        dom.roundaboutRadiusInput.value = formatNumber(roundabout.radius);
+        dom.roundaboutWidthInput.value = formatNumber(roundabout.width);
+        dom.roundaboutLanesInput.value = String(roundabout.lanes);
+        return;
+    }
+
+    if (!road) {
+        dom.selectionState.textContent = 'none';
+        return;
+    }
+
+    dom.selectionState.textContent = selectedPoint ? `${road.name} node ${state.selectedPointIndex + 1}` : road.name;
     dom.roadNameInput.value = road.name;
     dom.roadWidthInput.value = formatNumber(road.width);
     dom.roadLanesInput.value = String(road.lanes);
@@ -856,6 +1065,10 @@ function syncInspector() {
     dom.sidewalkWidthInput.value = formatNumber(road.sidewalkWidth);
     dom.sidewalkLeftInput.checked = !!road.sidewalkLeft;
     dom.sidewalkRightInput.checked = !!road.sidewalkRight;
+    if (selectedPoint) {
+        dom.pointSmoothInput.value = selectedPoint.smooth || 'corner';
+        dom.pointIndexInput.value = `${state.selectedPointIndex + 1} / ${road.points.length}`;
+    }
 }
 
 function updateSelectedRoadFromInspector() {
@@ -868,6 +1081,27 @@ function updateSelectedRoadFromInspector() {
     road.sidewalkWidth = clampNumber(dom.sidewalkWidthInput.value, 0, 8, road.sidewalkWidth);
     road.sidewalkLeft = dom.sidewalkLeftInput.checked;
     road.sidewalkRight = dom.sidewalkRightInput.checked;
+    markRoadDirty(road);
+    rebuildScene();
+}
+
+function updateSelectedPointFromInspector() {
+    const road = getSelectedRoad();
+    const point = road?.points[state.selectedPointIndex];
+    if (!point) return;
+    point.smooth = dom.pointSmoothInput.value;
+    markRoadDirty(road);
+    rebuildScene();
+    setStatus(`${road.name} node ${state.selectedPointIndex + 1}: ${formatSmoothMode(point.smooth)}. Press Build 3D to update geometry.`);
+}
+
+function updateSelectedRoundaboutFromInspector() {
+    const roundabout = getSelectedRoundabout();
+    if (!roundabout) return;
+    roundabout.name = dom.roundaboutNameInput.value.trim() || roundabout.name;
+    roundabout.radius = clampNumber(dom.roundaboutRadiusInput.value, 6, 180, roundabout.radius);
+    roundabout.width = clampNumber(dom.roundaboutWidthInput.value, 4, 60, roundabout.width);
+    roundabout.lanes = Math.round(clampNumber(dom.roundaboutLanesInput.value, 1, 6, roundabout.lanes));
     rebuildScene();
 }
 
@@ -875,14 +1109,75 @@ function getSelectedRoad() {
     return state.roads.find((road) => road.id === state.selectedRoadId) || null;
 }
 
+function getSelectedRoundabout() {
+    return state.roundabouts.find((roundabout) => roundabout.id === state.selectedRoundaboutId) || null;
+}
+
+function selectRoad(roadId, pointIndex = null) {
+    state.selectedRoadId = roadId;
+    state.selectedRoundaboutId = null;
+    state.selectedPointIndex = pointIndex;
+}
+
+function selectRoundabout(roundaboutId) {
+    state.selectedRoundaboutId = roundaboutId;
+    state.selectedRoadId = null;
+    state.selectedPointIndex = null;
+    state.activeDrawRoadId = null;
+}
+
+function hasSelection() {
+    return !!state.selectedRoadId || !!state.selectedRoundaboutId;
+}
+
+function markRoadDirty(road) {
+    if (!road) return;
+    road.buildDirty = true;
+}
+
+function buildSelectedRoad() {
+    const road = getSelectedRoad();
+    if (!road) {
+        setStatus('Select a road spline before building 3D geometry.');
+        return;
+    }
+    if (road.points.length < 2) {
+        setStatus(`${road.name} needs at least 2 spline nodes before Build 3D.`);
+        return;
+    }
+    road.points = normalizeRoadPoints(road.points);
+    road.builtAxisPoints = sampleRoadAxis(road);
+    road.built = true;
+    road.buildDirty = false;
+    rebuildScene();
+    setStatus(`${road.name} built as 3D road from ${road.points.length} spline nodes.`);
+}
+
+function deleteSelected() {
+    if (state.selectedRoundaboutId) {
+        deleteSelectedRoundabout();
+        return;
+    }
+    deleteSelectedRoad();
+}
+
 function deleteSelectedRoad() {
     if (!state.selectedRoadId) return;
     const index = state.roads.findIndex((road) => road.id === state.selectedRoadId);
     if (index < 0) return;
     const [removed] = state.roads.splice(index, 1);
-    state.selectedRoadId = state.roads[Math.max(0, index - 1)]?.id || null;
-    state.selectedPointIndex = null;
+    selectRoad(state.roads[Math.max(0, index - 1)]?.id || null, null);
     state.activeDrawRoadId = null;
+    rebuildScene();
+    setStatus(`Deleted ${removed.name}.`);
+}
+
+function deleteSelectedRoundabout() {
+    if (!state.selectedRoundaboutId) return;
+    const index = state.roundabouts.findIndex((roundabout) => roundabout.id === state.selectedRoundaboutId);
+    if (index < 0) return;
+    const [removed] = state.roundabouts.splice(index, 1);
+    state.selectedRoundaboutId = state.roundabouts[Math.max(0, index - 1)]?.id || null;
     rebuildScene();
     setStatus(`Deleted ${removed.name}.`);
 }
@@ -891,6 +1186,7 @@ function clearProject() {
     state.roads = [];
     state.roundabouts = [];
     state.selectedRoadId = null;
+    state.selectedRoundaboutId = null;
     state.selectedPointIndex = null;
     state.activeDrawRoadId = null;
     rebuildScene();
@@ -900,10 +1196,10 @@ function clearProject() {
 function syncStats() {
     const roadCount = state.roads.length;
     const pointCount = state.roads.reduce((sum, road) => sum + road.points.length, 0);
-    dom.objectCount.textContent = `${roadCount} roads`;
-    dom.selectionState.textContent = getSelectedRoad()?.name || 'none';
+    const builtCount = state.roads.filter((road) => road.built).length;
+    dom.objectCount.textContent = `${builtCount}/${roadCount} built`;
     if (roadCount === 1) {
-        setPassiveStatus(`1 road, ${pointCount} points, ${state.roundabouts.length} roundabouts.`);
+        setPassiveStatus(`1 road, ${pointCount} nodes, ${state.roundabouts.length} roundabouts.`);
     }
 }
 
@@ -1200,6 +1496,12 @@ function clampNumber(value, min, max, fallback) {
 
 function formatNumber(value) {
     return Number(value || 0).toFixed(2).replace(/\.00$/, '');
+}
+
+function formatSmoothMode(mode) {
+    if (mode === 'auto') return 'auto curve';
+    if (mode === 'smooth') return 'smooth';
+    return 'corner';
 }
 
 function setStatus(text) {
