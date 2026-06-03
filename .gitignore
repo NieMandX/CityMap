@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+dist/
+coverage/
+*.log
+*.tmp
+*.glb
+*.gltf
+*.gltf.zip
+citymap-project.json

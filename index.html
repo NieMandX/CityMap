@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CityMap editor</title>
+    <link rel="stylesheet" href="./styles/road-editor.css">
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="road-editor" data-mode="select">
+        <header class="road-toolbar" aria-label="Road editor toolbar">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true"></span>
+                <span>CityMap</span>
+            </div>
+
+            <nav class="toolbar-group" aria-label="Tools">
+                <button class="tool-btn is-active" type="button" data-tool="select" title="Select and edit points">
+                    <span class="tool-glyph pointer" aria-hidden="true"></span>
+                    <span>Select</span>
+                </button>
+                <button class="tool-btn" type="button" data-tool="draw" title="Draw road spline">
+                    <span class="tool-glyph spline" aria-hidden="true"></span>
+                    <span>Draw</span>
+                </button>
+                <button class="tool-btn" type="button" data-tool="roundabout" title="Place roundabout">
+                    <span class="tool-glyph ring" aria-hidden="true"></span>
+                    <span>Roundabout</span>
+                </button>
+            </nav>
+
+            <nav class="toolbar-group" aria-label="Viewport">
+                <button class="tool-btn" type="button" id="topViewBtn" title="Top view">
+                    <span class="tool-glyph top" aria-hidden="true"></span>
+                    <span>Top</span>
+                </button>
+                <button class="tool-btn" type="button" id="perspectiveViewBtn" title="Perspective view">
+                    <span class="tool-glyph orbit" aria-hidden="true"></span>
+                    <span>3D</span>
+                </button>
+                <button class="tool-btn" type="button" id="resetViewBtn" title="Reset view">
+                    <span class="tool-glyph reset" aria-hidden="true"></span>
+                    <span>Reset</span>
+                </button>
+            </nav>
+
+            <nav class="toolbar-group toolbar-actions" aria-label="Actions">
+                <button class="action-btn" type="button" id="exportJsonBtn">Export JSON</button>
+                <button class="action-btn primary" type="button" id="exportGlbBtn">Export GLB</button>
+                <button class="action-btn danger" type="button" id="clearBtn">Clear</button>
+            </nav>
+        </header>
+
+        <aside class="left-rail" aria-label="Tool rail">
+            <button class="rail-btn is-active" type="button" data-tool="select" title="Select">
+                <span class="tool-glyph pointer" aria-hidden="true"></span>
+            </button>
+            <button class="rail-btn" type="button" data-tool="draw" title="Draw road">
+                <span class="tool-glyph spline" aria-hidden="true"></span>
+            </button>
+            <button class="rail-btn" type="button" data-tool="roundabout" title="Roundabout">
+                <span class="tool-glyph ring" aria-hidden="true"></span>
+            </button>
+            <button class="rail-btn" type="button" id="snapBtn" title="Toggle snap">
+                <span class="tool-glyph snap" aria-hidden="true"></span>
+            </button>
+            <button class="rail-btn" type="button" id="gridBtn" title="Toggle grid">
+                <span class="tool-glyph grid" aria-hidden="true"></span>
+            </button>
+        </aside>
+
+        <main class="viewport-shell">
+            <canvas id="roadCanvas"></canvas>
+            <div class="viewport-tabs" aria-label="Viewport mode">
+                <button type="button" class="chip is-active" id="mode3dChip">3D</button>
+                <button type="button" class="chip" id="modeTopChip">Top</button>
+            </div>
+            <div class="compass" aria-hidden="true">
+                <span>N</span>
+                <span>E</span>
+                <span>S</span>
+                <span>W</span>
+                <strong>TOP</strong>
+            </div>
+            <div class="scale-bar" aria-hidden="true">
+                <span></span>
+                <b>100 m</b>
+            </div>
+        </main>
+
+        <aside class="inspector" aria-label="Road inspector">
+            <section class="panel-section">
+                <div class="section-title">
+                    <span>Project</span>
+                    <small id="objectCount">0 roads</small>
+                </div>
+                <div class="field-grid two">
+                    <label>
+                        <span>Lat</span>
+                        <input id="centerLatInput" type="number" step="0.000001" value="54.750676">
+                    </label>
+                    <label>
+                        <span>Lon</span>
+                        <input id="centerLonInput" type="number" step="0.000001" value="55.996645">
+                    </label>
+                </div>
+                <div class="field-grid two">
+                    <label>
+                        <span>Size m</span>
+                        <input id="sceneSizeInput" type="number" min="50" max="5000" step="10" value="600">
+                    </label>
+                    <label>
+                        <span>Snap m</span>
+                        <input id="snapSizeInput" type="number" min="0.25" max="20" step="0.25" value="2">
+                    </label>
+                </div>
+                <div class="inline-actions">
+                    <button class="action-btn" type="button" id="applyBoundsBtn">Apply</button>
+                    <button class="action-btn" type="button" id="uploadUnderlayBtn">Upload image</button>
+                    <input id="underlayFileInput" type="file" accept="image/*" hidden>
+                </div>
+            </section>
+
+            <section class="panel-section">
+                <div class="section-title">
+                    <span>Underlay</span>
+                    <small id="underlayState">demo</small>
+                </div>
+                <label>
+                    <span>Layer</span>
+                    <select id="underlaySelect">
+                        <option value="satellite">Demo satellite</option>
+                        <option value="scheme">Demo scheme</option>
+                        <option value="mask">Road mask</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Yandex key</span>
+                    <input id="yandexKeyInput" type="password" autocomplete="off" placeholder="optional">
+                </label>
+                <label>
+                    <span>Yandex type</span>
+                    <select id="yandexMaptypeInput">
+                        <option value="map">map</option>
+                        <option value="driving">driving</option>
+                        <option value="transit">transit</option>
+                        <option value="admin">admin</option>
+                    </select>
+                </label>
+                <button class="action-btn full" type="button" id="loadYandexBtn">Load Yandex Static</button>
+            </section>
+
+            <section class="panel-section">
+                <div class="section-title">
+                    <span>Selected road</span>
+                    <small id="selectionState">Road 1</small>
+                </div>
+                <label>
+                    <span>Name</span>
+                    <input id="roadNameInput" type="text" value="Main road">
+                </label>
+                <div class="field-grid two">
+                    <label>
+                        <span>Width m</span>
+                        <input id="roadWidthInput" type="number" min="2" max="80" step="0.5" value="18">
+                    </label>
+                    <label>
+                        <span>Lanes</span>
+                        <input id="roadLanesInput" type="number" min="1" max="8" step="1" value="4">
+                    </label>
+                </div>
+                <div class="field-grid two">
+                    <label>
+                        <span>Lane m</span>
+                        <input id="laneWidthInput" type="number" min="2" max="5" step="0.1" value="3.5">
+                    </label>
+                    <label>
+                        <span>Sidewalk m</span>
+                        <input id="sidewalkWidthInput" type="number" min="0" max="8" step="0.25" value="2">
+                    </label>
+                </div>
+                <div class="toggle-row">
+                    <label><input id="sidewalkLeftInput" type="checkbox" checked> Left sidewalk</label>
+                    <label><input id="sidewalkRightInput" type="checkbox" checked> Right sidewalk</label>
+                </div>
+                <button class="action-btn full danger" type="button" id="deleteSelectedBtn">Delete selected road</button>
+            </section>
+        </aside>
+
+        <footer class="status-bar">
+            <span id="statusText">Select a point or switch to Draw and click the ground plane.</span>
+            <span id="coordText">54.750676 N, 55.996645 E</span>
+        </footer>
+    </div>
+
+    <script type="module" src="./scripts/road-editor.js"></script>
+</body>
+</html>
