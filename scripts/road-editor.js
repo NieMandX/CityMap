@@ -17,6 +17,7 @@ const state = {
     selectedRoadId: 'road-1',
     selectedRoundaboutId: null,
     selectedPointIndex: null,
+    editingRoadId: null,
     activeDrawRoadId: null,
     drag: null,
     underlayMode: 'satellite',
@@ -277,18 +278,26 @@ function initMaterials() {
         opacity: 0.42,
         depthWrite: false,
     });
-    materials.builtRoadPreview = new THREE.MeshBasicMaterial({
-        color: 0x2d8cff,
+    materials.roadFootprint = new THREE.MeshBasicMaterial({
+        color: 0xc6d1da,
         transparent: true,
-        opacity: 0.18,
+        opacity: 0.14,
         depthWrite: false,
         depthTest: false,
         side: THREE.DoubleSide,
     });
-    materials.dirtyRoadPreview = new THREE.MeshBasicMaterial({
-        color: 0xffd23f,
+    materials.selectedRoadFootprint = new THREE.MeshBasicMaterial({
+        color: 0x2d8cff,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.24,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+    });
+    materials.draftRoadFootprint = new THREE.MeshBasicMaterial({
+        color: 0x17c3b2,
+        transparent: true,
+        opacity: 0.16,
         depthWrite: false,
         depthTest: false,
         side: THREE.DoubleSide,
@@ -384,10 +393,14 @@ function normalizeRoadPoints(points) {
 function setMode(mode) {
     state.mode = mode;
     state.activeDrawRoadId = mode === 'draw' ? state.activeDrawRoadId : null;
+    if (mode !== 'select') {
+        state.editingRoadId = null;
+        state.selectedPointIndex = null;
+    }
     dom.editor.dataset.mode = mode;
     dom.toolButtons.forEach((btn) => btn.classList.toggle('is-active', btn.dataset.tool === mode));
     if (mode === 'draw') setStatus('Draw mode: click to add road spline points. Press Enter to start a new road.');
-    if (mode === 'select') setStatus('Select mode: drag yellow control points to reshape roads.');
+    if (mode === 'select') setStatus('Select mode: click a road to move it, double-click it to edit points.');
     if (mode === 'roundabout') setStatus('Roundabout mode: click the ground plane to place a procedural roundabout.');
 }
 
@@ -519,28 +532,34 @@ function createRoadObjects(road) {
 function createRoadHelpers(road) {
     const objects = [];
     const isSelectedRoad = road.id === state.selectedRoadId;
-    if (isSelectedRoad && road.built && road.builtAxisPoints?.length >= 2) {
-        const previewMaterial = road.buildDirty ? materials.dirtyRoadPreview : materials.builtRoadPreview;
-        const footprint = buildRibbonMesh(road.builtAxisPoints, road.width + 1.2, 0.24, previewMaterial);
+    const isEditingRoad = isRoadEditing(road);
+    const isActiveDrawRoad = road.id === state.activeDrawRoadId;
+    const footprintAxis = road.built && road.builtAxisPoints?.length >= 2 ? road.builtAxisPoints : sampleRoadAxis(road);
+    if (footprintAxis.length >= 2) {
+        const previewMaterial = isSelectedRoad
+            ? materials.selectedRoadFootprint
+            : (road.built ? materials.roadFootprint : materials.draftRoadFootprint);
+        const footprint = buildRibbonMesh(footprintAxis, road.width + (isSelectedRoad ? 1.2 : 0), 0.24, previewMaterial);
         footprint.name = `${road.name} generated 3D road footprint`;
-        footprint.userData = { roadId: road.id, helper: true, kind: 'built-road-preview' };
+        footprint.userData = { roadId: road.id, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
         footprint.renderOrder = 2;
         objects.push(footprint);
     }
 
-    const splineAxis = sampleRoadAxis(road);
-    if (splineAxis.length >= 2) {
-        const color = isSelectedRoad
-            ? (road.buildDirty ? 0xffd23f : 0x2d8cff)
-            : (road.built ? 0x60717e : 0x17c3b2);
+    const showEditControls = isEditingRoad || isActiveDrawRoad;
+    const splineAxis = showEditControls ? sampleRoadAxis(road) : [];
+    if (showEditControls && splineAxis.length >= 2) {
+        const color = road.buildDirty ? 0xffd23f : 0x2d8cff;
         const splineLine = buildLine(splineAxis, color, 1.42);
         splineLine.name = `${road.name} editable spline`;
         splineLine.userData = { roadId: road.id, helper: true, kind: 'editable-spline' };
         splineLine.renderOrder = 3;
         objects.push(splineLine);
     }
+    if (!showEditControls) return objects;
+
     road.points.forEach((point, index) => {
-        const selected = isSelectedRoad && index === state.selectedPointIndex;
+        const selected = isSelectedRoad && isEditingRoad && index === state.selectedPointIndex;
         const handle = new THREE.Mesh(
             new THREE.SphereGeometry(selected ? 2.8 : 2.1, 18, 12),
             selected ? materials.controlSelected : materials.control,
@@ -878,8 +897,8 @@ function onPointerDown(event) {
 
     const hit = findNearestControlPoint(ground, 9);
     if (hit) {
-        selectRoad(hit.road.id, hit.index);
-        state.drag = { roadId: hit.road.id, pointIndex: hit.index };
+        enterRoadEditMode(hit.road.id, hit.index);
+        state.drag = { type: 'point', roadId: hit.road.id, pointIndex: hit.index };
         controls.enabled = false;
         rebuildScene();
         setStatus(`Dragging ${hit.road.name} node ${hit.index + 1}.`);
@@ -888,6 +907,17 @@ function onPointerDown(event) {
 
     const roundaboutHit = findNearestRoundabout(ground);
     if (roundaboutHit) {
+        if (state.selectedRoundaboutId === roundaboutHit.roundabout.id) {
+            state.drag = {
+                type: 'roundabout',
+                roundaboutId: roundaboutHit.roundabout.id,
+                start: ground,
+                originalCenter: { ...roundaboutHit.roundabout.center },
+            };
+            controls.enabled = false;
+            setStatus(`Moving ${roundaboutHit.roundabout.name}.`);
+            return;
+        }
         selectRoundabout(roundaboutHit.roundabout.id);
         rebuildScene();
         setStatus(`Selected ${roundaboutHit.roundabout.name}.`);
@@ -896,9 +926,20 @@ function onPointerDown(event) {
 
     const roadHit = findNearestRoad(ground);
     if (roadHit) {
+        if (state.selectedRoadId === roadHit.road.id && !isRoadEditing(roadHit.road)) {
+            state.drag = {
+                type: 'road',
+                roadId: roadHit.road.id,
+                start: ground,
+                originalPoints: roadHit.road.points.map((point) => ({ ...point })),
+            };
+            controls.enabled = false;
+            setStatus(`Moving ${roadHit.road.name}.`);
+            return;
+        }
         selectRoad(roadHit.road.id, null);
         rebuildScene();
-        setStatus(`Selected ${roadHit.road.name}.`);
+        setStatus(`Selected ${roadHit.road.name}. Double-click to edit points.`);
     }
 }
 
@@ -910,34 +951,71 @@ function onPointerMove(event) {
     dom.coordText.textContent = `${geo.lat.toFixed(6)} N, ${geo.lon.toFixed(6)} E`;
 
     if (!state.drag) return;
-    const road = getSelectedRoad();
-    if (!road) return;
-    const point = road.points[state.drag.pointIndex];
-    if (!point) return;
-    point.x = ground.x;
-    point.z = ground.z;
-    markRoadDirty(road);
+    if (state.drag.type === 'point') {
+        const road = getRoadById(state.drag.roadId);
+        if (!road) return;
+        const point = road.points[state.drag.pointIndex];
+        if (!point) return;
+        point.x = ground.x;
+        point.z = ground.z;
+        rebuildGeneratedRoadAfterGeometryChange(road);
+        rebuildScene();
+        return;
+    }
+    if (state.drag.type === 'road') {
+        const road = getRoadById(state.drag.roadId);
+        if (!road) return;
+        const dx = ground.x - state.drag.start.x;
+        const dz = ground.z - state.drag.start.z;
+        road.points = state.drag.originalPoints.map((point) => ({
+            ...point,
+            x: point.x + dx,
+            z: point.z + dz,
+        }));
+        rebuildGeneratedRoadAfterGeometryChange(road);
+        rebuildScene();
+        return;
+    }
+    if (state.drag.type === 'roundabout') {
+        const roundabout = getRoundaboutById(state.drag.roundaboutId);
+        if (!roundabout) return;
+        roundabout.center = {
+            x: state.drag.originalCenter.x + ground.x - state.drag.start.x,
+            z: state.drag.originalCenter.z + ground.z - state.drag.start.z,
+        };
+        rebuildScene();
+        return;
+    }
     rebuildScene();
 }
 
 function onPointerUp() {
     if (state.drag) {
+        const dragType = state.drag.type;
         state.drag = null;
         controls.enabled = true;
-        setStatus('Node updated. Press Build 3D to update the generated road.');
+        if (dragType === 'point') setStatus('Node updated. 3D road geometry is in sync.');
+        if (dragType === 'road') setStatus('Road moved.');
+        if (dragType === 'roundabout') setStatus('Roundabout moved.');
     }
 }
 
 function onDoubleClick(event) {
     if (state.mode !== 'select' || isEditableTarget(event.target)) return;
     event.preventDefault();
-    const ground = getGroundPoint(event);
-    if (!ground) return;
+    const editingRoad = getSelectedRoad();
+    if (editingRoad && isRoadEditing(editingRoad)) {
+        const editHit = findNearestRoadSegmentOnScreen(event, 32, editingRoad.id);
+        if (editHit) insertRoadPoint(editHit.road, editHit.segmentIndex, editHit.point);
+        return;
+    }
 
-    const hit = findNearestRoadSegment(ground, 12);
+    const hit = findNearestRoadSegmentOnScreen(event, 32);
     if (!hit) return;
 
-    insertRoadPoint(hit.road, hit.segmentIndex, ground);
+    enterRoadEditMode(hit.road.id, null);
+    rebuildScene();
+    setStatus(`Editing ${hit.road.name}: drag nodes or double-click a segment to insert a node.`);
 }
 
 function onKeyDown(event) {
@@ -946,6 +1024,7 @@ function onKeyDown(event) {
         state.selectedPointIndex = null;
         state.activeDrawRoadId = null;
         state.selectedRoundaboutId = null;
+        state.editingRoadId = null;
         setMode('select');
         rebuildScene();
     }
@@ -988,7 +1067,7 @@ function addDrawPoint(point) {
         road = createDefaultRoad(point);
         state.roads.push(road);
         state.activeDrawRoadId = road.id;
-        selectRoad(road.id, 0);
+        enterRoadEditMode(road.id, 0);
         setStatus('First spline node placed. Add one more point, then Build 3D.');
     } else {
         road.points.push({
@@ -996,7 +1075,7 @@ function addDrawPoint(point) {
             smooth: road.points.length > 0 ? 'smooth' : 'corner',
         });
         markRoadDirty(road);
-        selectRoad(road.id, road.points.length - 1);
+        enterRoadEditMode(road.id, road.points.length - 1);
         setStatus(`${road.name}: ${road.points.length} spline nodes. Press Build 3D to generate the road.`);
     }
     rebuildScene();
@@ -1011,7 +1090,7 @@ function insertRoadPoint(road, segmentIndex, point) {
         smooth: 'smooth',
     });
     rebuildGeneratedRoadAfterTopologyChange(road);
-    selectRoad(road.id, insertIndex);
+    enterRoadEditMode(road.id, insertIndex);
     rebuildScene();
     setStatus(`${road.name}: inserted node ${insertIndex + 1}. ${road.built ? '3D road rebuilt.' : 'Press Build 3D to generate the road.'}`);
 }
@@ -1055,6 +1134,7 @@ function addRoundabout(point) {
 function findNearestControlPoint(point, thresholdM) {
     let best = null;
     state.roads.forEach((road) => {
+        if (!isRoadEditing(road) && road.id !== state.activeDrawRoadId) return;
         road.points.forEach((candidate, index) => {
             const distance = distance2(point, candidate);
             if (distance <= thresholdM && (!best || distance < best.distance)) {
@@ -1081,9 +1161,10 @@ function findNearestRoad(point) {
     return best;
 }
 
-function findNearestRoadSegment(point, thresholdM) {
+function findNearestRoadSegment(point, thresholdM, roadId = null) {
     let best = null;
     state.roads.forEach((road) => {
+        if (roadId && road.id !== roadId) return;
         const points = normalizeRoadPoints(road.points);
         if (points.length < 2) return;
         for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
@@ -1102,6 +1183,64 @@ function findNearestRoadSegment(point, thresholdM) {
         }
     });
     return best;
+}
+
+function findNearestRoadSegmentOnScreen(event, thresholdPx, roadId = null) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    const click = { x: event.clientX, y: event.clientY };
+    let best = null;
+
+    state.roads.forEach((road) => {
+        if (roadId && road.id !== roadId) return;
+        const points = normalizeRoadPoints(road.points);
+        if (points.length < 2) return;
+        for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+            const segment = sampleRoadSegment(points, segmentIndex);
+            for (let i = 1; i < segment.length; i += 1) {
+                const a = localPointToScreen(segment[i - 1], rect);
+                const b = localPointToScreen(segment[i], rect);
+                const candidate = nearestPointOnScreenSegment(click, a, b);
+                if (candidate.distance <= thresholdPx && (!best || candidate.distance < best.distance)) {
+                    best = {
+                        road,
+                        segmentIndex,
+                        distance: candidate.distance,
+                        point: {
+                            x: THREE.MathUtils.lerp(segment[i - 1].x, segment[i].x, candidate.t),
+                            z: THREE.MathUtils.lerp(segment[i - 1].z, segment[i].z, candidate.t),
+                        },
+                    };
+                }
+            }
+        }
+    });
+
+    return best;
+}
+
+function localPointToScreen(point, rect) {
+    const projected = new THREE.Vector3(point.x, 1.42, point.z).project(camera);
+    return {
+        x: rect.left + ((projected.x + 1) / 2) * rect.width,
+        y: rect.top + ((1 - projected.y) / 2) * rect.height,
+    };
+}
+
+function nearestPointOnScreenSegment(point, a, b) {
+    const vx = b.x - a.x;
+    const vy = b.y - a.y;
+    const wx = point.x - a.x;
+    const wy = point.y - a.y;
+    const len2 = vx * vx + vy * vy;
+    const t = len2 <= EPS ? 0 : THREE.MathUtils.clamp((wx * vx + wy * vy) / len2, 0, 1);
+    const nearest = {
+        x: a.x + vx * t,
+        y: a.y + vy * t,
+    };
+    return {
+        t,
+        distance: Math.hypot(point.x - nearest.x, point.y - nearest.y),
+    };
 }
 
 function findNearestRoundabout(point) {
@@ -1146,13 +1285,14 @@ function nearestPointOnSegment(point, a, b) {
 function syncInspector() {
     const road = getSelectedRoad();
     const roundabout = getSelectedRoundabout();
-    const selectedPoint = road && Number.isInteger(state.selectedPointIndex)
+    const roadIsEditing = road ? isRoadEditing(road) : false;
+    const selectedPoint = roadIsEditing && Number.isInteger(state.selectedPointIndex)
         ? road.points[state.selectedPointIndex]
         : null;
 
     dom.roadFields.hidden = !road;
     dom.roundaboutFields.hidden = !roundabout;
-    dom.nodeFields.hidden = !road || road.points.length === 0;
+    dom.nodeFields.hidden = !roadIsEditing || road.points.length === 0;
     dom.deleteSelectedBtn.disabled = !road && !roundabout;
     dom.buildRoadBtn.disabled = !road || road.points.length < 2;
     dom.buildSelectedRoadBtn.disabled = !road || road.points.length < 2;
@@ -1174,7 +1314,9 @@ function syncInspector() {
         return;
     }
 
-    dom.selectionState.textContent = selectedPoint ? `${road.name} node ${state.selectedPointIndex + 1}` : road.name;
+    dom.selectionState.textContent = selectedPoint
+        ? `${road.name} node ${state.selectedPointIndex + 1}`
+        : `${road.name} ${roadIsEditing ? 'edit' : 'move'}`;
     dom.deleteSelectedBtn.textContent = selectedPoint ? 'Delete selected node' : 'Delete selected road';
     dom.roadNameInput.value = road.name;
     dom.roadWidthInput.value = formatNumber(road.width);
@@ -1231,16 +1373,16 @@ function updateSelectedPointFromInspector() {
     const point = road?.points[state.selectedPointIndex];
     if (!point) return;
     point.smooth = dom.pointSmoothInput.value;
-    markRoadDirty(road);
+    rebuildGeneratedRoadAfterGeometryChange(road);
     rebuildScene();
-    setStatus(`${road.name} node ${state.selectedPointIndex + 1}: ${formatSmoothMode(point.smooth)}. Press Build 3D to update geometry.`);
+    setStatus(`${road.name} node ${state.selectedPointIndex + 1}: ${formatSmoothMode(point.smooth)}. ${road.built ? '3D road rebuilt.' : 'Press Build 3D to generate the road.'}`);
 }
 
 function updateSelectedPointSelectionFromInspector() {
     const road = getSelectedRoad();
     if (!road) return;
     const nextIndex = dom.pointSelectInput.value === '' ? null : Number(dom.pointSelectInput.value);
-    selectRoad(road.id, Number.isInteger(nextIndex) ? nextIndex : null);
+    enterRoadEditMode(road.id, Number.isInteger(nextIndex) ? nextIndex : null);
     rebuildScene();
     setStatus(Number.isInteger(nextIndex) ? `Selected ${road.name} node ${nextIndex + 1}.` : `Selected ${road.name}.`);
 }
@@ -1256,23 +1398,42 @@ function updateSelectedRoundaboutFromInspector() {
 }
 
 function getSelectedRoad() {
-    return state.roads.find((road) => road.id === state.selectedRoadId) || null;
+    return getRoadById(state.selectedRoadId);
 }
 
 function getSelectedRoundabout() {
-    return state.roundabouts.find((roundabout) => roundabout.id === state.selectedRoundaboutId) || null;
+    return getRoundaboutById(state.selectedRoundaboutId);
 }
 
-function selectRoad(roadId, pointIndex = null) {
+function getRoadById(roadId) {
+    return state.roads.find((road) => road.id === roadId) || null;
+}
+
+function getRoundaboutById(roundaboutId) {
+    return state.roundabouts.find((roundabout) => roundabout.id === roundaboutId) || null;
+}
+
+function selectRoad(roadId, pointIndex = null, options = {}) {
     state.selectedRoadId = roadId;
     state.selectedRoundaboutId = null;
-    state.selectedPointIndex = pointIndex;
+    state.editingRoadId = options.edit && roadId ? roadId : null;
+    state.selectedPointIndex = options.edit ? pointIndex : null;
+}
+
+function enterRoadEditMode(roadId, pointIndex = null) {
+    selectRoad(roadId, pointIndex, { edit: true });
+}
+
+function isRoadEditing(roadOrId) {
+    const roadId = typeof roadOrId === 'string' ? roadOrId : roadOrId?.id;
+    return !!roadId && state.editingRoadId === roadId;
 }
 
 function selectRoundabout(roundaboutId) {
     state.selectedRoundaboutId = roundaboutId;
     state.selectedRoadId = null;
     state.selectedPointIndex = null;
+    state.editingRoadId = null;
     state.activeDrawRoadId = null;
 }
 
@@ -1282,12 +1443,23 @@ function hasSelection() {
 
 function hasSelectedPoint() {
     const road = getSelectedRoad();
-    return !!road && Number.isInteger(state.selectedPointIndex) && !!road.points[state.selectedPointIndex];
+    return isRoadEditing(road) && Number.isInteger(state.selectedPointIndex) && !!road.points[state.selectedPointIndex];
 }
 
 function markRoadDirty(road) {
     if (!road) return;
     road.buildDirty = true;
+}
+
+function rebuildGeneratedRoadAfterGeometryChange(road) {
+    if (!road) return;
+    road.points = normalizeRoadPoints(road.points);
+    if (road.built && road.points.length >= 2) {
+        road.builtAxisPoints = sampleRoadAxis(road);
+        road.buildDirty = false;
+        return;
+    }
+    road.buildDirty = road.points.length > 0;
 }
 
 function rebuildGeneratedRoadAfterTopologyChange(road) {
@@ -1379,6 +1551,7 @@ function deleteSelectedRoundabout() {
     if (index < 0) return;
     const [removed] = state.roundabouts.splice(index, 1);
     state.selectedRoundaboutId = state.roundabouts[Math.max(0, index - 1)]?.id || null;
+    state.editingRoadId = null;
     rebuildScene();
     setStatus(`Deleted ${removed.name}.`);
 }
@@ -1389,6 +1562,7 @@ function clearProject() {
     state.selectedRoadId = null;
     state.selectedRoundaboutId = null;
     state.selectedPointIndex = null;
+    state.editingRoadId = null;
     state.activeDrawRoadId = null;
     rebuildScene();
     setStatus('Project cleared.');
