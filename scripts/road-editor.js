@@ -5,6 +5,15 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 const DEFAULT_CENTER = { lat: 54.750676, lon: 55.996645 };
 const DEFAULT_SIZE_M = 600;
 const EPS = 1e-6;
+const ROAD_SURFACE_Y = 0.05;
+const SIDEWALK_SURFACE_Y = 0.08;
+const CURB_SURFACE_Y = 0.13;
+const MARKING_SURFACE_Y = 0.16;
+const CURB_WIDTH_M = 0.32;
+const EDGE_MARKING_INSET_M = 0.45;
+const LANE_MARKING_WIDTH_M = 0.13;
+const LANE_DASH_M = 4.2;
+const LANE_GAP_M = 5.8;
 
 const materials = {};
 const dom = {};
@@ -281,7 +290,7 @@ function initMaterials() {
     materials.roadFootprint = new THREE.MeshBasicMaterial({
         color: 0xc6d1da,
         transparent: true,
-        opacity: 0.14,
+        opacity: 0.07,
         depthWrite: false,
         depthTest: false,
         side: THREE.DoubleSide,
@@ -289,7 +298,7 @@ function initMaterials() {
     materials.selectedRoadFootprint = new THREE.MeshBasicMaterial({
         color: 0x2d8cff,
         transparent: true,
-        opacity: 0.24,
+        opacity: 0.16,
         depthWrite: false,
         depthTest: false,
         side: THREE.DoubleSide,
@@ -297,7 +306,7 @@ function initMaterials() {
     materials.draftRoadFootprint = new THREE.MeshBasicMaterial({
         color: 0x17c3b2,
         transparent: true,
-        opacity: 0.16,
+        opacity: 0.12,
         depthWrite: false,
         depthTest: false,
         side: THREE.DoubleSide,
@@ -466,65 +475,103 @@ function createRoadObjects(road) {
     const axisPoints = road.builtAxisPoints;
     const isSelected = state.selectedRoadId === road.id;
 
-    const asphalt = buildRibbonMesh(axisPoints, road.width, 0.05, materials.asphalt);
+    const asphalt = buildRibbonMesh(axisPoints, road.width, ROAD_SURFACE_Y, materials.asphalt);
     asphalt.name = `${road.name} asphalt`;
     asphalt.userData = { roadId: road.id, selectable: true, kind: 'road' };
     objects.push(asphalt);
 
-    const curbHalf = road.width / 2 + 0.14;
-    const leftCurb = buildRibbonMesh(offsetPolyline(axisPoints, curbHalf), 0.28, 0.09, materials.curb);
-    const rightCurb = buildRibbonMesh(offsetPolyline(axisPoints, -curbHalf), 0.28, 0.09, materials.curb);
-    leftCurb.name = `${road.name} left curb`;
-    rightCurb.name = `${road.name} right curb`;
-    leftCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    rightCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    objects.push(leftCurb, rightCurb);
+    objects.push(...createRoadSideObjects(axisPoints, road, 1, 'left', road.sidewalkLeft));
+    objects.push(...createRoadSideObjects(axisPoints, road, -1, 'right', road.sidewalkRight));
 
-    if (road.sidewalkLeft && road.sidewalkWidth > 0) {
-        const sidewalk = buildRibbonMesh(
-            offsetPolyline(axisPoints, road.width / 2 + road.sidewalkWidth / 2 + 0.42),
-            road.sidewalkWidth,
-            0.04,
-            materials.sidewalk,
-        );
-        sidewalk.name = `${road.name} left sidewalk`;
-        sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
-        objects.push(sidewalk);
-    }
-    if (road.sidewalkRight && road.sidewalkWidth > 0) {
-        const sidewalk = buildRibbonMesh(
-            offsetPolyline(axisPoints, -road.width / 2 - road.sidewalkWidth / 2 - 0.42),
-            road.sidewalkWidth,
-            0.04,
-            materials.sidewalk,
-        );
-        sidewalk.name = `${road.name} right sidewalk`;
-        sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
-        objects.push(sidewalk);
-    }
-
-    const edgeLeft = buildRibbonMesh(offsetPolyline(axisPoints, road.width / 2 - 0.45), 0.16, 0.12, materials.marking);
-    const edgeRight = buildRibbonMesh(offsetPolyline(axisPoints, -road.width / 2 + 0.45), 0.16, 0.12, materials.marking);
+    const edgeLeft = buildRibbonMesh(
+        offsetPolyline(axisPoints, road.width / 2 - EDGE_MARKING_INSET_M),
+        0.16,
+        MARKING_SURFACE_Y,
+        materials.marking,
+    );
+    const edgeRight = buildRibbonMesh(
+        offsetPolyline(axisPoints, -road.width / 2 + EDGE_MARKING_INSET_M),
+        0.16,
+        MARKING_SURFACE_Y,
+        materials.marking,
+    );
     edgeLeft.name = `${road.name} left edge line`;
     edgeRight.name = `${road.name} right edge line`;
     objects.push(edgeLeft, edgeRight);
 
-    const laneCount = Math.max(1, Math.round(road.lanes || 1));
-    if (laneCount > 1) {
-        const laneStep = road.width / laneCount;
-        for (let i = 1; i < laneCount; i += 1) {
-            const offset = -road.width / 2 + laneStep * i;
-            const dashes = buildDashedLineMeshes(offsetPolyline(axisPoints, offset), 0.13, 4.2, 5.8, 0.14, materials.marking);
-            dashes.forEach((dash, index) => {
-                dash.name = `${road.name} lane dash ${i}.${index + 1}`;
-                objects.push(dash);
-            });
-        }
-    }
+    objects.push(...createRoadLaneMarkings(axisPoints, road));
 
     const centerLine = buildLine(axisPoints, isSelected ? 0x2d8cff : 0x60717e, 1.16);
     centerLine.name = `${road.name} centerline`;
     objects.push(centerLine);
+
+    return objects;
+}
+
+function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
+    const objects = [];
+    const sidewalkWidth = Math.max(0, Number(road.sidewalkWidth) || 0);
+    const roadEdge = road.width / 2;
+    const innerCurb = buildRibbonMesh(
+        offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M / 2)),
+        CURB_WIDTH_M,
+        CURB_SURFACE_Y,
+        materials.curb,
+    );
+    innerCurb.name = `${road.name} ${sideName} inner curb`;
+    innerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    objects.push(innerCurb);
+
+    if (!enabled || sidewalkWidth <= 0) return objects;
+
+    const sidewalk = buildRibbonMesh(
+        offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M + sidewalkWidth / 2)),
+        sidewalkWidth,
+        SIDEWALK_SURFACE_Y,
+        materials.sidewalk,
+    );
+    sidewalk.name = `${road.name} ${sideName} sidewalk`;
+    sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    objects.push(sidewalk);
+
+    const outerCurb = buildRibbonMesh(
+        offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M + sidewalkWidth + CURB_WIDTH_M / 2)),
+        CURB_WIDTH_M,
+        CURB_SURFACE_Y,
+        materials.curb,
+    );
+    outerCurb.name = `${road.name} ${sideName} outer curb`;
+    outerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    objects.push(outerCurb);
+
+    return objects;
+}
+
+function createRoadLaneMarkings(axisPoints, road) {
+    const objects = [];
+    const laneCount = Math.max(1, Math.round(road.lanes || 1));
+    if (laneCount <= 1) return objects;
+
+    const requestedLaneWidth = Math.max(0.1, Number(road.laneWidth) || road.width / laneCount);
+    const laneAreaWidth = Math.min(road.width, requestedLaneWidth * laneCount);
+    const laneStep = laneAreaWidth / laneCount;
+
+    for (let i = 1; i < laneCount; i += 1) {
+        const offset = -laneAreaWidth / 2 + laneStep * i;
+        const dashes = buildDashedLineMeshes(
+            offsetPolyline(axisPoints, offset),
+            LANE_MARKING_WIDTH_M,
+            LANE_DASH_M,
+            LANE_GAP_M,
+            MARKING_SURFACE_Y,
+            materials.marking,
+        );
+        dashes.forEach((dash, index) => {
+            dash.name = `${road.name} lane dash ${i}.${index + 1}`;
+            dash.userData = { roadId: road.id, selectable: true, kind: 'road' };
+            objects.push(dash);
+        });
+    }
 
     return objects;
 }
@@ -1164,7 +1211,7 @@ function findNearestRoad(point) {
         if (axis.length < 2) return;
         for (let i = 1; i < axis.length; i += 1) {
             const distance = distancePointToSegment(point, axis[i - 1], axis[i]);
-            const threshold = Math.max(5, road.width / 2 + 3);
+            const threshold = getRoadVisualHalfWidth(road) + 2;
             if (distance <= threshold && (!best || distance < best.distance)) {
                 best = { road, distance };
             }
@@ -1195,6 +1242,19 @@ function findNearestRoadSegment(point, thresholdM, roadId = null) {
         }
     });
     return best;
+}
+
+function getRoadVisualHalfWidth(road) {
+    const sidewalkWidth = Math.max(0, Number(road?.sidewalkWidth) || 0);
+    const leftExtension = getRoadSideExtension(road?.sidewalkLeft, sidewalkWidth);
+    const rightExtension = getRoadSideExtension(road?.sidewalkRight, sidewalkWidth);
+    return Math.max(1, Number(road?.width) || 0) / 2 + Math.max(leftExtension, rightExtension);
+}
+
+function getRoadSideExtension(enabled, sidewalkWidth) {
+    return enabled && sidewalkWidth > 0
+        ? CURB_WIDTH_M + sidewalkWidth + CURB_WIDTH_M
+        : CURB_WIDTH_M;
 }
 
 function findRoadSegmentForInsertion(event, road) {
