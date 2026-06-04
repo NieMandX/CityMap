@@ -787,6 +787,14 @@ function buildRibbonVolumeMesh(points, width, topY, baseY, material) {
     const vertices = [];
     const uvs = [];
     const indices = [];
+    const topLeft = [];
+    const topRight = [];
+    const bottomLeft = [];
+    const bottomRight = [];
+    const leftSideTop = [];
+    const leftSideBottom = [];
+    const rightSideTop = [];
+    const rightSideBottom = [];
     let distance = 0;
 
     for (let i = 0; i < points.length; i += 1) {
@@ -800,29 +808,27 @@ function buildRibbonVolumeMesh(points, width, topY, baseY, material) {
             x: points[i].x - normal.x * width * 0.5,
             z: points[i].z - normal.z * width * 0.5,
         };
-        vertices.push(
-            left.x, topY, left.z,
-            right.x, topY, right.z,
-            left.x, baseY, left.z,
-            right.x, baseY, right.z,
-        );
         const u = distance / Math.max(width, 1);
-        uvs.push(u, 0, u, 1, u, 0, u, 1);
+        topLeft.push(addGeometryVertex(vertices, uvs, left.x, topY, left.z, u, 0));
+        topRight.push(addGeometryVertex(vertices, uvs, right.x, topY, right.z, u, 1));
+        bottomLeft.push(addGeometryVertex(vertices, uvs, left.x, baseY, left.z, u, 0));
+        bottomRight.push(addGeometryVertex(vertices, uvs, right.x, baseY, right.z, u, 1));
+        leftSideTop.push(addGeometryVertex(vertices, uvs, left.x, topY, left.z, u, 0));
+        leftSideBottom.push(addGeometryVertex(vertices, uvs, left.x, baseY, left.z, u, 1));
+        rightSideTop.push(addGeometryVertex(vertices, uvs, right.x, topY, right.z, u, 0));
+        rightSideBottom.push(addGeometryVertex(vertices, uvs, right.x, baseY, right.z, u, 1));
     }
 
     for (let i = 0; i < points.length - 1; i += 1) {
-        const a = i * 4;
-        const b = (i + 1) * 4;
-        pushQuad(indices, a, b, a + 1, b + 1);
-        pushQuad(indices, a + 2, b + 2, a, b);
-        pushQuad(indices, a + 3, a + 1, b + 3, b + 1);
-        pushQuad(indices, a + 2, a + 3, b + 2, b + 3);
+        const next = i + 1;
+        pushQuad(indices, topLeft[i], topLeft[next], topRight[i], topRight[next]);
+        pushQuad(indices, bottomLeft[i], bottomRight[i], bottomLeft[next], bottomRight[next]);
+        pushQuad(indices, leftSideTop[i], leftSideBottom[i], leftSideTop[next], leftSideBottom[next]);
+        pushQuad(indices, rightSideTop[i], rightSideTop[next], rightSideBottom[i], rightSideBottom[next]);
     }
 
-    const start = 0;
-    const end = (points.length - 1) * 4;
-    pushQuad(indices, start + 2, start, start + 3, start + 1);
-    pushQuad(indices, end, end + 2, end + 1, end + 3);
+    pushRibbonCap(indices, vertices, uvs, points, width, 0, topY, baseY, false);
+    pushRibbonCap(indices, vertices, uvs, points, width, points.length - 1, topY, baseY, true);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -830,6 +836,35 @@ function buildRibbonVolumeMesh(points, width, topY, baseY, material) {
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     return new THREE.Mesh(geometry, material);
+}
+
+function pushRibbonCap(indices, vertices, uvs, points, width, pointIndex, topY, baseY, endCap) {
+    const point = points[pointIndex];
+    const normal = getPointNormal(points, pointIndex);
+    const left = {
+        x: point.x + normal.x * width * 0.5,
+        z: point.z + normal.z * width * 0.5,
+    };
+    const right = {
+        x: point.x - normal.x * width * 0.5,
+        z: point.z - normal.z * width * 0.5,
+    };
+    const topLeft = addGeometryVertex(vertices, uvs, left.x, topY, left.z, 0, 0);
+    const topRight = addGeometryVertex(vertices, uvs, right.x, topY, right.z, 1, 0);
+    const bottomLeft = addGeometryVertex(vertices, uvs, left.x, baseY, left.z, 0, 1);
+    const bottomRight = addGeometryVertex(vertices, uvs, right.x, baseY, right.z, 1, 1);
+    if (endCap) {
+        pushQuad(indices, topLeft, bottomLeft, topRight, bottomRight);
+        return;
+    }
+    pushQuad(indices, topLeft, topRight, bottomLeft, bottomRight);
+}
+
+function addGeometryVertex(vertices, uvs, x, y, z, u, v) {
+    const index = vertices.length / 3;
+    vertices.push(x, y, z);
+    uvs.push(u, v);
+    return index;
 }
 
 function buildMeshWireframe(mesh) {
@@ -923,6 +958,14 @@ function buildRingVolumeMesh(center, innerR, outerR, topY, baseY, material, segm
     const vertices = [];
     const uvs = [];
     const indices = [];
+    const topOuter = [];
+    const topInner = [];
+    const bottomOuter = [];
+    const bottomInner = [];
+    const outerSideTop = [];
+    const outerSideBottom = [];
+    const innerSideTop = [];
+    const innerSideBottom = [];
     const safeInnerR = Math.max(0.01, innerR);
     const safeOuterR = Math.max(safeInnerR + 0.01, outerR);
 
@@ -930,22 +973,27 @@ function buildRingVolumeMesh(center, innerR, outerR, topY, baseY, material, segm
         const t = (i / segments) * Math.PI * 2;
         const c = Math.cos(t);
         const s = Math.sin(t);
-        vertices.push(
-            center.x + c * safeOuterR, topY, center.z + s * safeOuterR,
-            center.x + c * safeInnerR, topY, center.z + s * safeInnerR,
-            center.x + c * safeOuterR, baseY, center.z + s * safeOuterR,
-            center.x + c * safeInnerR, baseY, center.z + s * safeInnerR,
-        );
-        uvs.push(i / segments, 1, i / segments, 0, i / segments, 1, i / segments, 0);
+        const u = i / segments;
+        const outerX = center.x + c * safeOuterR;
+        const outerZ = center.z + s * safeOuterR;
+        const innerX = center.x + c * safeInnerR;
+        const innerZ = center.z + s * safeInnerR;
+        topOuter.push(addGeometryVertex(vertices, uvs, outerX, topY, outerZ, u, 1));
+        topInner.push(addGeometryVertex(vertices, uvs, innerX, topY, innerZ, u, 0));
+        bottomOuter.push(addGeometryVertex(vertices, uvs, outerX, baseY, outerZ, u, 1));
+        bottomInner.push(addGeometryVertex(vertices, uvs, innerX, baseY, innerZ, u, 0));
+        outerSideTop.push(addGeometryVertex(vertices, uvs, outerX, topY, outerZ, u, 0));
+        outerSideBottom.push(addGeometryVertex(vertices, uvs, outerX, baseY, outerZ, u, 1));
+        innerSideTop.push(addGeometryVertex(vertices, uvs, innerX, topY, innerZ, u, 0));
+        innerSideBottom.push(addGeometryVertex(vertices, uvs, innerX, baseY, innerZ, u, 1));
     }
 
     for (let i = 0; i < segments; i += 1) {
-        const a = i * 4;
-        const b = (i + 1) * 4;
-        pushQuad(indices, a, a + 1, b, b + 1);
-        pushQuad(indices, a, b, a + 2, b + 2);
-        pushQuad(indices, a + 1, a + 3, b + 1, b + 3);
-        pushQuad(indices, a + 3, a + 2, b + 3, b + 2);
+        const next = i + 1;
+        pushQuad(indices, topOuter[i], topInner[i], topOuter[next], topInner[next]);
+        pushQuad(indices, bottomOuter[i], bottomOuter[next], bottomInner[i], bottomInner[next]);
+        pushQuad(indices, outerSideTop[i], outerSideTop[next], outerSideBottom[i], outerSideBottom[next]);
+        pushQuad(indices, innerSideTop[i], innerSideBottom[i], innerSideTop[next], innerSideBottom[next]);
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -974,28 +1022,34 @@ function buildDiscMesh(center, radius, y, material, segments = 72) {
 }
 
 function buildDiscVolumeMesh(center, radius, topY, baseY, material, segments = 72) {
-    const vertices = [
-        center.x, topY, center.z,
-        center.x, baseY, center.z,
-    ];
-    const uvs = [0.5, 0.5, 0.5, 0.5];
+    const vertices = [];
+    const uvs = [];
     const indices = [];
+    const topCenter = addGeometryVertex(vertices, uvs, center.x, topY, center.z, 0.5, 0.5);
+    const bottomCenter = addGeometryVertex(vertices, uvs, center.x, baseY, center.z, 0.5, 0.5);
+    const topRing = [];
+    const bottomRing = [];
+    const sideTop = [];
+    const sideBottom = [];
     const safeRadius = Math.max(0.01, radius);
 
     for (let i = 0; i <= segments; i += 1) {
         const t = (i / segments) * Math.PI * 2;
         const x = center.x + Math.cos(t) * safeRadius;
         const z = center.z + Math.sin(t) * safeRadius;
-        vertices.push(x, topY, z, x, baseY, z);
-        uvs.push((Math.cos(t) + 1) / 2, (Math.sin(t) + 1) / 2, (Math.cos(t) + 1) / 2, (Math.sin(t) + 1) / 2);
+        const u = (Math.cos(t) + 1) / 2;
+        const v = (Math.sin(t) + 1) / 2;
+        topRing.push(addGeometryVertex(vertices, uvs, x, topY, z, u, v));
+        bottomRing.push(addGeometryVertex(vertices, uvs, x, baseY, z, u, v));
+        sideTop.push(addGeometryVertex(vertices, uvs, x, topY, z, i / segments, 0));
+        sideBottom.push(addGeometryVertex(vertices, uvs, x, baseY, z, i / segments, 1));
     }
 
     for (let i = 0; i < segments; i += 1) {
-        const a = 2 + i * 2;
-        const b = 2 + (i + 1) * 2;
-        indices.push(0, b, a);
-        indices.push(1, a + 1, b + 1);
-        pushQuad(indices, a, b, a + 1, b + 1);
+        const next = i + 1;
+        indices.push(topCenter, topRing[next], topRing[i]);
+        indices.push(bottomCenter, bottomRing[i], bottomRing[next]);
+        pushQuad(indices, sideTop[i], sideTop[next], sideBottom[i], sideBottom[next]);
     }
 
     const geometry = new THREE.BufferGeometry();
