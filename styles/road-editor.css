@@ -519,6 +519,41 @@ select:disabled {
     border: 2px solid currentColor;
 }
 
+.tool-glyph.wire::before {
+    content: "";
+    position: absolute;
+    inset: 4px;
+    background:
+        linear-gradient(45deg, transparent 46%, currentColor 48%, currentColor 52%, transparent 54%),
+        linear-gradient(-45deg, transparent 46%, currentColor 48%, currentColor 52%, transparent 54%);
+    border: 2px solid currentColor;
+    transform: skewX(-12deg);
+}
+
+.tool-glyph.normals::before,
+.tool-glyph.normals::after {
+    content: "";
+    position: absolute;
+}
+
+.tool-glyph.normals::before {
+    left: 4px;
+    bottom: 4px;
+    width: 15px;
+    border-top: 2px solid currentColor;
+    transform: rotate(-28deg);
+}
+
+.tool-glyph.normals::after {
+    left: 10px;
+    top: 2px;
+    width: 8px;
+    height: 13px;
+    border-left: 2px solid currentColor;
+    border-top: 2px solid currentColor;
+    transform: rotate(24deg);
+}
+
 @media (max-width: 980px) {
     :root {
         --road-inspector-w: 286px;

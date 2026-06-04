@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CityMap editor</title>
-    <link rel="stylesheet" href="./styles/road-editor.css?v=solid-mesh-20260604">
+    <link rel="stylesheet" href="./styles/road-editor.css?v=mesh-debug-20260604b">
     <script type="importmap">
         {
             "imports": {
@@ -49,6 +49,14 @@
                 <button class="tool-btn" type="button" id="resetViewBtn" title="Reset view">
                     <span class="tool-glyph reset" aria-hidden="true"></span>
                     <span>Reset</span>
+                </button>
+                <button class="tool-btn is-active" type="button" id="wireframeBtn" title="Toggle mesh wireframe">
+                    <span class="tool-glyph wire" aria-hidden="true"></span>
+                    <span>Wire</span>
+                </button>
+                <button class="tool-btn" type="button" id="normalsBtn" title="Toggle surface normals">
+                    <span class="tool-glyph normals" aria-hidden="true"></span>
+                    <span>Normals</span>
                 </button>
             </nav>
 
@@ -244,6 +252,6 @@
         </footer>
     </div>
 
-    <script type="module" src="./scripts/road-editor.js?v=solid-mesh-20260604"></script>
+    <script type="module" src="./scripts/road-editor.js?v=mesh-debug-20260604b"></script>
 </body>
 </html>

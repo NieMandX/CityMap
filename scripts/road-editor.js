@@ -18,6 +18,9 @@ const LANE_MARKING_WIDTH_M = 0.13;
 const LANE_DASH_M = 4.2;
 const LANE_GAP_M = 5.8;
 const MESH_WIREFRAME_Y_BIAS = 0.012;
+const NORMAL_LINE_LENGTH_M = 2.4;
+const NORMAL_LINE_BIAS_M = 0.08;
+const MAX_NORMAL_LINES_PER_MESH = 260;
 
 const materials = {};
 const dom = {};
@@ -34,6 +37,8 @@ const state = {
     activeDrawRoadId: null,
     drag: null,
     underlayMode: 'satellite',
+    showWireframe: true,
+    showNormals: false,
     roadSeq: 3,
     roundaboutSeq: 2,
     profiles: [
@@ -158,6 +163,8 @@ function collectDom() {
         topViewBtn: document.getElementById('topViewBtn'),
         perspectiveViewBtn: document.getElementById('perspectiveViewBtn'),
         resetViewBtn: document.getElementById('resetViewBtn'),
+        wireframeBtn: document.getElementById('wireframeBtn'),
+        normalsBtn: document.getElementById('normalsBtn'),
         mode3dChip: document.getElementById('mode3dChip'),
         modeTopChip: document.getElementById('modeTopChip'),
         snapBtn: document.getElementById('snapBtn'),
@@ -332,6 +339,13 @@ function initMaterials() {
         depthTest: false,
         depthWrite: false,
     });
+    materials.meshNormals = new THREE.LineBasicMaterial({
+        color: 0x4dff88,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false,
+    });
 }
 
 function bindUi() {
@@ -344,6 +358,19 @@ function bindUi() {
     dom.perspectiveViewBtn.addEventListener('click', setPerspectiveView);
     dom.mode3dChip.addEventListener('click', setPerspectiveView);
     dom.resetViewBtn.addEventListener('click', setPerspectiveView);
+    dom.wireframeBtn.addEventListener('click', () => {
+        state.showWireframe = !state.showWireframe;
+        syncDebugDisplayButtons();
+        rebuildScene();
+        setStatus(state.showWireframe ? 'Mesh wireframe visible.' : 'Mesh wireframe hidden.');
+    });
+    dom.normalsBtn.addEventListener('click', () => {
+        state.showNormals = !state.showNormals;
+        syncDebugDisplayButtons();
+        rebuildScene();
+        setStatus(state.showNormals ? 'Surface normals visible.' : 'Surface normals hidden.');
+    });
+    syncDebugDisplayButtons();
 
     dom.snapBtn.addEventListener('click', () => {
         state.snapEnabled = !state.snapEnabled;
@@ -422,6 +449,13 @@ function setMode(mode) {
     if (mode === 'draw') setStatus('Draw mode: click to add road spline points. Press Enter to start a new road.');
     if (mode === 'select') setStatus('Select mode: click a road to move it, double-click it to edit points.');
     if (mode === 'roundabout') setStatus('Roundabout mode: click the ground plane to place a procedural roundabout.');
+}
+
+function syncDebugDisplayButtons() {
+    dom.wireframeBtn.classList.toggle('is-active', state.showWireframe);
+    dom.wireframeBtn.setAttribute('aria-pressed', String(state.showWireframe));
+    dom.normalsBtn.classList.toggle('is-active', state.showNormals);
+    dom.normalsBtn.setAttribute('aria-pressed', String(state.showNormals));
 }
 
 function setTopView() {
@@ -563,8 +597,14 @@ function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
 
 function addGeneratedMesh(objects, mesh) {
     objects.push(mesh);
-    const wireframe = buildMeshWireframe(mesh);
-    if (wireframe) objects.push(wireframe);
+    if (state.showWireframe) {
+        const wireframe = buildMeshWireframe(mesh);
+        if (wireframe) objects.push(wireframe);
+    }
+    if (state.showNormals) {
+        const normals = buildMeshNormals(mesh);
+        if (normals) objects.push(normals);
+    }
 }
 
 function createRoadLaneMarkings(axisPoints, road) {
@@ -773,16 +813,16 @@ function buildRibbonVolumeMesh(points, width, topY, baseY, material) {
     for (let i = 0; i < points.length - 1; i += 1) {
         const a = i * 4;
         const b = (i + 1) * 4;
-        pushQuad(indices, a, a + 1, b, b + 1);
+        pushQuad(indices, a, b, a + 1, b + 1);
         pushQuad(indices, a + 2, b + 2, a, b);
-        pushQuad(indices, a + 1, a + 3, b + 1, b + 3);
-        pushQuad(indices, a + 3, a + 2, b + 3, b + 2);
+        pushQuad(indices, a + 3, a + 1, b + 3, b + 1);
+        pushQuad(indices, a + 2, a + 3, b + 2, b + 3);
     }
 
     const start = 0;
     const end = (points.length - 1) * 4;
-    pushQuad(indices, start, start + 2, start + 1, start + 3);
-    pushQuad(indices, end + 2, end, end + 3, end + 1);
+    pushQuad(indices, start + 2, start, start + 3, start + 1);
+    pushQuad(indices, end, end + 2, end + 1, end + 3);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -804,6 +844,50 @@ function buildMeshWireframe(mesh) {
     line.name = `${mesh.name || 'mesh'} wireframe`;
     line.renderOrder = 5;
     line.userData = { helper: true, exportable: false };
+    return line;
+}
+
+function buildMeshNormals(mesh) {
+    const sourceGeometry = mesh?.geometry;
+    const position = sourceGeometry?.getAttribute('position');
+    if (!position || position.count < 3) return null;
+
+    const index = sourceGeometry.getIndex();
+    const triangleCount = index ? Math.floor(index.count / 3) : Math.floor(position.count / 3);
+    if (triangleCount <= 0) return null;
+
+    const stride = Math.max(1, Math.ceil(triangleCount / MAX_NORMAL_LINES_PER_MESH));
+    const vertices = [];
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    const normal = new THREE.Vector3();
+    const triangle = new THREE.Triangle();
+
+    for (let triangleIndex = 0; triangleIndex < triangleCount; triangleIndex += stride) {
+        const ia = index ? index.getX(triangleIndex * 3) : triangleIndex * 3;
+        const ib = index ? index.getX(triangleIndex * 3 + 1) : triangleIndex * 3 + 1;
+        const ic = index ? index.getX(triangleIndex * 3 + 2) : triangleIndex * 3 + 2;
+        a.fromBufferAttribute(position, ia);
+        b.fromBufferAttribute(position, ib);
+        c.fromBufferAttribute(position, ic);
+        triangle.set(a, b, c).getNormal(normal);
+        if (normal.lengthSq() <= EPS) continue;
+
+        center.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+        const start = center.clone().addScaledVector(normal, NORMAL_LINE_BIAS_M);
+        const end = start.clone().addScaledVector(normal, NORMAL_LINE_LENGTH_M);
+        vertices.push(start.x, start.y, start.z, end.x, end.y, end.z);
+    }
+
+    if (vertices.length === 0) return null;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    const line = new THREE.LineSegments(geometry, materials.meshNormals);
+    line.name = `${mesh.name || 'mesh'} normals`;
+    line.renderOrder = 6;
+    line.userData = { helper: true, exportable: false, kind: 'normal-debug' };
     return line;
 }
 
@@ -859,7 +943,7 @@ function buildRingVolumeMesh(center, innerR, outerR, topY, baseY, material, segm
         const a = i * 4;
         const b = (i + 1) * 4;
         pushQuad(indices, a, a + 1, b, b + 1);
-        pushQuad(indices, a + 2, b + 2, a, b);
+        pushQuad(indices, a, b, a + 2, b + 2);
         pushQuad(indices, a + 1, a + 3, b + 1, b + 3);
         pushQuad(indices, a + 3, a + 2, b + 3, b + 2);
     }
@@ -909,9 +993,9 @@ function buildDiscVolumeMesh(center, radius, topY, baseY, material, segments = 7
     for (let i = 0; i < segments; i += 1) {
         const a = 2 + i * 2;
         const b = 2 + (i + 1) * 2;
-        indices.push(0, a, b);
-        indices.push(1, b + 1, a + 1);
-        pushQuad(indices, a, a + 1, b, b + 1);
+        indices.push(0, b, a);
+        indices.push(1, a + 1, b + 1);
+        pushQuad(indices, a, b, a + 1, b + 1);
     }
 
     const geometry = new THREE.BufferGeometry();
