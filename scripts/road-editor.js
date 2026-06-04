@@ -926,6 +926,12 @@ function onPointerDown(event) {
 
     const roadHit = findNearestRoad(ground);
     if (roadHit) {
+        if (state.selectedRoadId === roadHit.road.id && isRoadEditing(roadHit.road)) {
+            state.selectedPointIndex = null;
+            rebuildScene();
+            setStatus(`Editing ${roadHit.road.name}: double-click the road surface to insert a node.`);
+            return;
+        }
         if (state.selectedRoadId === roadHit.road.id && !isRoadEditing(roadHit.road)) {
             state.drag = {
                 type: 'road',
@@ -1003,19 +1009,25 @@ function onPointerUp() {
 function onDoubleClick(event) {
     if (state.mode !== 'select' || isEditableTarget(event.target)) return;
     event.preventDefault();
+    state.drag = null;
+    controls.enabled = true;
     const editingRoad = getSelectedRoad();
     if (editingRoad && isRoadEditing(editingRoad)) {
-        const editHit = findNearestRoadSegmentOnScreen(event, 32, editingRoad.id);
-        if (editHit) insertRoadPoint(editHit.road, editHit.segmentIndex, editHit.point);
+        const editHit = findRoadSegmentForInsertion(event, editingRoad);
+        if (editHit) {
+            insertRoadPoint(editHit.road, editHit.segmentIndex, editHit.point);
+        } else {
+            setStatus(`${editingRoad.name}: double-click closer to the road surface to insert a node.`);
+        }
         return;
     }
 
-    const hit = findNearestRoadSegmentOnScreen(event, 32);
+    const hit = findNearestRoadSegmentOnScreen(event, 56);
     if (!hit) return;
 
     enterRoadEditMode(hit.road.id, null);
     rebuildScene();
-    setStatus(`Editing ${hit.road.name}: drag nodes or double-click a segment to insert a node.`);
+    setStatus(`Editing ${hit.road.name}: drag nodes or double-click the road surface to insert a node.`);
 }
 
 function onKeyDown(event) {
@@ -1183,6 +1195,17 @@ function findNearestRoadSegment(point, thresholdM, roadId = null) {
         }
     });
     return best;
+}
+
+function findRoadSegmentForInsertion(event, road) {
+    if (!road) return null;
+    const screenHit = findNearestRoadSegmentOnScreen(event, 56, road.id);
+    if (screenHit) return screenHit;
+
+    const ground = getGroundPoint(event);
+    if (!ground) return null;
+    const roadSurfaceThreshold = Math.max(road.width * 1.5, road.width / 2 + 12, 24);
+    return findNearestRoadSegment(ground, roadSurfaceThreshold, road.id);
 }
 
 function findNearestRoadSegmentOnScreen(event, thresholdPx, roadId = null) {
