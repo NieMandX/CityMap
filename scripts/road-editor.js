@@ -5,15 +5,19 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 const DEFAULT_CENTER = { lat: 54.750676, lon: 55.996645 };
 const DEFAULT_SIZE_M = 600;
 const EPS = 1e-6;
-const ROAD_SURFACE_Y = 0.05;
-const SIDEWALK_SURFACE_Y = 0.08;
-const CURB_SURFACE_Y = 0.13;
-const MARKING_SURFACE_Y = 0.16;
+const ROAD_BASE_Y = 0;
+const ROAD_SURFACE_Y = 0.18;
+const SIDEWALK_BASE_Y = 0;
+const SIDEWALK_SURFACE_Y = 0.28;
+const CURB_BASE_Y = 0;
+const CURB_SURFACE_Y = 0.42;
+const MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.018;
 const CURB_WIDTH_M = 0.32;
 const EDGE_MARKING_INSET_M = 0.45;
 const LANE_MARKING_WIDTH_M = 0.13;
 const LANE_DASH_M = 4.2;
 const LANE_GAP_M = 5.8;
+const MESH_WIREFRAME_Y_BIAS = 0.012;
 
 const materials = {};
 const dom = {};
@@ -321,6 +325,13 @@ function initMaterials() {
         emissive: 0x08354f,
         roughness: 0.42,
     });
+    materials.meshWireframe = new THREE.LineBasicMaterial({
+        color: 0xe7f0f8,
+        transparent: true,
+        opacity: 0.32,
+        depthTest: false,
+        depthWrite: false,
+    });
 }
 
 function bindUi() {
@@ -475,10 +486,10 @@ function createRoadObjects(road) {
     const axisPoints = road.builtAxisPoints;
     const isSelected = state.selectedRoadId === road.id;
 
-    const asphalt = buildRibbonMesh(axisPoints, road.width, ROAD_SURFACE_Y, materials.asphalt);
+    const asphalt = buildRibbonVolumeMesh(axisPoints, road.width, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt);
     asphalt.name = `${road.name} asphalt`;
     asphalt.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    objects.push(asphalt);
+    addGeneratedMesh(objects, asphalt);
 
     objects.push(...createRoadSideObjects(axisPoints, road, 1, 'left', road.sidewalkLeft));
     objects.push(...createRoadSideObjects(axisPoints, road, -1, 'right', road.sidewalkRight));
@@ -512,39 +523,48 @@ function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
     const objects = [];
     const sidewalkWidth = Math.max(0, Number(road.sidewalkWidth) || 0);
     const roadEdge = road.width / 2;
-    const innerCurb = buildRibbonMesh(
+    const innerCurb = buildRibbonVolumeMesh(
         offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M / 2)),
         CURB_WIDTH_M,
         CURB_SURFACE_Y,
+        CURB_BASE_Y,
         materials.curb,
     );
     innerCurb.name = `${road.name} ${sideName} inner curb`;
     innerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    objects.push(innerCurb);
+    addGeneratedMesh(objects, innerCurb);
 
     if (!enabled || sidewalkWidth <= 0) return objects;
 
-    const sidewalk = buildRibbonMesh(
+    const sidewalk = buildRibbonVolumeMesh(
         offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M + sidewalkWidth / 2)),
         sidewalkWidth,
         SIDEWALK_SURFACE_Y,
+        SIDEWALK_BASE_Y,
         materials.sidewalk,
     );
     sidewalk.name = `${road.name} ${sideName} sidewalk`;
     sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    objects.push(sidewalk);
+    addGeneratedMesh(objects, sidewalk);
 
-    const outerCurb = buildRibbonMesh(
+    const outerCurb = buildRibbonVolumeMesh(
         offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M + sidewalkWidth + CURB_WIDTH_M / 2)),
         CURB_WIDTH_M,
         CURB_SURFACE_Y,
+        CURB_BASE_Y,
         materials.curb,
     );
     outerCurb.name = `${road.name} ${sideName} outer curb`;
     outerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    objects.push(outerCurb);
+    addGeneratedMesh(objects, outerCurb);
 
     return objects;
+}
+
+function addGeneratedMesh(objects, mesh) {
+    objects.push(mesh);
+    const wireframe = buildMeshWireframe(mesh);
+    if (wireframe) objects.push(wireframe);
 }
 
 function createRoadLaneMarkings(axisPoints, road) {
@@ -624,30 +644,47 @@ function createRoundaboutObjects(roundabout) {
     const objects = [];
     const outerR = roundabout.radius + roundabout.width / 2;
     const innerR = Math.max(4, roundabout.radius - roundabout.width / 2);
-    const ring = buildRingMesh(roundabout.center, innerR, outerR, 0.07, materials.asphalt, 128);
+    const ring = buildRingVolumeMesh(roundabout.center, innerR, outerR, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt, 128);
     ring.name = `${roundabout.name} asphalt`;
     ring.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
-    objects.push(ring);
+    addGeneratedMesh(objects, ring);
 
-    const island = buildDiscMesh(roundabout.center, Math.max(2, innerR - 2.2), 0.08, materials.island, 96);
+    const island = buildDiscVolumeMesh(roundabout.center, Math.max(2, innerR - 2.2), SIDEWALK_SURFACE_Y, SIDEWALK_BASE_Y, materials.island, 96);
     island.name = `${roundabout.name} island`;
     island.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
-    objects.push(island);
+    addGeneratedMesh(objects, island);
 
-    const innerCurb = buildCircleStrip(roundabout.center, innerR, 0.32, 0.13, materials.curb, 128);
-    const outerCurb = buildCircleStrip(roundabout.center, outerR, 0.32, 0.13, materials.curb, 128);
+    const innerCurb = buildRingVolumeMesh(
+        roundabout.center,
+        innerR - CURB_WIDTH_M / 2,
+        innerR + CURB_WIDTH_M / 2,
+        CURB_SURFACE_Y,
+        CURB_BASE_Y,
+        materials.curb,
+        128,
+    );
+    const outerCurb = buildRingVolumeMesh(
+        roundabout.center,
+        outerR - CURB_WIDTH_M / 2,
+        outerR + CURB_WIDTH_M / 2,
+        CURB_SURFACE_Y,
+        CURB_BASE_Y,
+        materials.curb,
+        128,
+    );
     innerCurb.name = `${roundabout.name} inner curb`;
     outerCurb.name = `${roundabout.name} outer curb`;
     innerCurb.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
     outerCurb.userData = { roundaboutId: roundabout.id, selectable: true, kind: 'roundabout' };
-    objects.push(innerCurb, outerCurb);
+    addGeneratedMesh(objects, innerCurb);
+    addGeneratedMesh(objects, outerCurb);
 
     const laneCount = Math.max(1, Math.round(roundabout.lanes || 1));
     if (laneCount > 1) {
         const laneStep = roundabout.width / laneCount;
         for (let i = 1; i < laneCount; i += 1) {
             const radius = innerR + laneStep * i;
-            const dashed = buildDashedCircle(roundabout.center, radius, 0.12, 0.16, materials.marking, 96);
+            const dashed = buildDashedCircle(roundabout.center, radius, 0.12, MARKING_SURFACE_Y, materials.marking, 96);
             dashed.forEach((obj, index) => {
                 obj.name = `${roundabout.name} circular dash ${index + 1}`;
                 objects.push(obj);
@@ -702,6 +739,78 @@ function buildRibbonMesh(points, width, y, material) {
     return new THREE.Mesh(geometry, material);
 }
 
+function buildRibbonVolumeMesh(points, width, topY, baseY, material) {
+    if (!points || points.length < 2) {
+        return new THREE.Mesh(new THREE.BufferGeometry(), material);
+    }
+
+    const vertices = [];
+    const uvs = [];
+    const indices = [];
+    let distance = 0;
+
+    for (let i = 0; i < points.length; i += 1) {
+        if (i > 0) distance += distance2(points[i - 1], points[i]);
+        const normal = getPointNormal(points, i);
+        const left = {
+            x: points[i].x + normal.x * width * 0.5,
+            z: points[i].z + normal.z * width * 0.5,
+        };
+        const right = {
+            x: points[i].x - normal.x * width * 0.5,
+            z: points[i].z - normal.z * width * 0.5,
+        };
+        vertices.push(
+            left.x, topY, left.z,
+            right.x, topY, right.z,
+            left.x, baseY, left.z,
+            right.x, baseY, right.z,
+        );
+        const u = distance / Math.max(width, 1);
+        uvs.push(u, 0, u, 1, u, 0, u, 1);
+    }
+
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const a = i * 4;
+        const b = (i + 1) * 4;
+        pushQuad(indices, a, a + 1, b, b + 1);
+        pushQuad(indices, a + 2, b + 2, a, b);
+        pushQuad(indices, a + 1, a + 3, b + 1, b + 3);
+        pushQuad(indices, a + 3, a + 2, b + 3, b + 2);
+    }
+
+    const start = 0;
+    const end = (points.length - 1) * 4;
+    pushQuad(indices, start, start + 2, start + 1, start + 3);
+    pushQuad(indices, end + 2, end, end + 3, end + 1);
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return new THREE.Mesh(geometry, material);
+}
+
+function buildMeshWireframe(mesh) {
+    if (!mesh?.geometry) return null;
+    const geometry = new THREE.WireframeGeometry(mesh.geometry);
+    const position = geometry.getAttribute('position');
+    for (let i = 0; i < position.count; i += 1) {
+        position.setY(i, position.getY(i) + MESH_WIREFRAME_Y_BIAS);
+    }
+    position.needsUpdate = true;
+    const line = new THREE.LineSegments(geometry, materials.meshWireframe);
+    line.name = `${mesh.name || 'mesh'} wireframe`;
+    line.renderOrder = 5;
+    line.userData = { helper: true, exportable: false };
+    return line;
+}
+
+function pushQuad(indices, a, b, c, d) {
+    indices.push(a, b, c, b, d, c);
+}
+
 function buildRingMesh(center, innerR, outerR, y, material, segments = 96) {
     const vertices = [];
     const uvs = [];
@@ -726,6 +835,43 @@ function buildRingMesh(center, innerR, outerR, y, material, segments = 96) {
     return new THREE.Mesh(geometry, material);
 }
 
+function buildRingVolumeMesh(center, innerR, outerR, topY, baseY, material, segments = 96) {
+    const vertices = [];
+    const uvs = [];
+    const indices = [];
+    const safeInnerR = Math.max(0.01, innerR);
+    const safeOuterR = Math.max(safeInnerR + 0.01, outerR);
+
+    for (let i = 0; i <= segments; i += 1) {
+        const t = (i / segments) * Math.PI * 2;
+        const c = Math.cos(t);
+        const s = Math.sin(t);
+        vertices.push(
+            center.x + c * safeOuterR, topY, center.z + s * safeOuterR,
+            center.x + c * safeInnerR, topY, center.z + s * safeInnerR,
+            center.x + c * safeOuterR, baseY, center.z + s * safeOuterR,
+            center.x + c * safeInnerR, baseY, center.z + s * safeInnerR,
+        );
+        uvs.push(i / segments, 1, i / segments, 0, i / segments, 1, i / segments, 0);
+    }
+
+    for (let i = 0; i < segments; i += 1) {
+        const a = i * 4;
+        const b = (i + 1) * 4;
+        pushQuad(indices, a, a + 1, b, b + 1);
+        pushQuad(indices, a + 2, b + 2, a, b);
+        pushQuad(indices, a + 1, a + 3, b + 1, b + 3);
+        pushQuad(indices, a + 3, a + 2, b + 3, b + 2);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return new THREE.Mesh(geometry, material);
+}
+
 function buildDiscMesh(center, radius, y, material, segments = 72) {
     const vertices = [center.x, y, center.z];
     const indices = [];
@@ -738,6 +884,39 @@ function buildDiscMesh(center, radius, y, material, segments = 72) {
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return new THREE.Mesh(geometry, material);
+}
+
+function buildDiscVolumeMesh(center, radius, topY, baseY, material, segments = 72) {
+    const vertices = [
+        center.x, topY, center.z,
+        center.x, baseY, center.z,
+    ];
+    const uvs = [0.5, 0.5, 0.5, 0.5];
+    const indices = [];
+    const safeRadius = Math.max(0.01, radius);
+
+    for (let i = 0; i <= segments; i += 1) {
+        const t = (i / segments) * Math.PI * 2;
+        const x = center.x + Math.cos(t) * safeRadius;
+        const z = center.z + Math.sin(t) * safeRadius;
+        vertices.push(x, topY, z, x, baseY, z);
+        uvs.push((Math.cos(t) + 1) / 2, (Math.sin(t) + 1) / 2, (Math.cos(t) + 1) / 2, (Math.sin(t) + 1) / 2);
+    }
+
+    for (let i = 0; i < segments; i += 1) {
+        const a = 2 + i * 2;
+        const b = 2 + (i + 1) * 2;
+        indices.push(0, a, b);
+        indices.push(1, b + 1, a + 1);
+        pushQuad(indices, a, a + 1, b, b + 1);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     return new THREE.Mesh(geometry, material);
@@ -1902,6 +2081,7 @@ async function exportGlb() {
     setStatus('Preparing GLB export...');
     clearGroup(exportGroup);
     roadGroup.children.forEach((child) => {
+        if (child.userData?.exportable === false) return;
         if (child.isLine) return;
         const clone = cloneForExport(child);
         exportGroup.add(clone);
