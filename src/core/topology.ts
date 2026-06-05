@@ -7,6 +7,7 @@ import {
     type Point2D,
     type RoadAxisSource,
 } from './geometry';
+import { calculateRoadLaneLayout, type TrafficDirection } from './lanes';
 
 const DEFAULT_MERGE_RADIUS_M = 18;
 const DEFAULT_ENDPOINT_SNAP_RADIUS_M = 10;
@@ -18,6 +19,7 @@ export type RoadTopologySource = RoadAxisSource & {
     width?: number;
     lanes?: number;
     laneWidth?: number;
+    trafficDirection?: TrafficDirection;
     sidewalkWidth?: number;
     sidewalkLeft?: boolean;
     sidewalkRight?: boolean;
@@ -41,6 +43,7 @@ export type JunctionApproach = {
     widthM: number;
     lanes: number;
     laneWidthM: number;
+    trafficDirection: TrafficDirection;
     sidewalkWidthM: number;
     angleRad: number;
     distanceM: number;
@@ -304,27 +307,28 @@ function buildRoadApproaches(sample: SampledRoad, center: Point2D, endpointSnapR
     const nearest = nearestOnSampledRoad(sample, center);
     const roadName = sample.road.name || sample.road.id;
     const widthM = Math.max(1, Number(sample.road.width) || 0);
-    const lanes = Math.max(1, Math.round(Number(sample.road.lanes) || Math.max(1, widthM / 3.5)));
-    const laneWidthM = Math.max(0.1, Number(sample.road.laneWidth) || widthM / lanes);
+    const layout = calculateRoadLaneLayout(widthM, sample.road.laneWidth, sample.road.trafficDirection);
+    const lanes = layout.totalLanes;
+    const laneWidthM = layout.laneWidthM;
     const sidewalkEnabled = sample.road.sidewalkLeft !== false || sample.road.sidewalkRight !== false;
     const sidewalkWidthM = sidewalkEnabled ? Math.max(0, Number(sample.road.sidewalkWidth) || 0) : 0;
     const lookahead = Math.max(8, Math.min(22, sample.totalM * 0.2));
 
     if (nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
-        return [makeApproach(sample.road.id, roadName, 'start', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'start', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
     }
 
     if (sample.totalM - nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
-        return [makeApproach(sample.road.id, roadName, 'end', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'end', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
     }
 
     const backwardTarget = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
     const forwardTarget = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
     return [
-        makeApproach(sample.road.id, roadName, 'backward', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, backwardTarget)),
-        makeApproach(sample.road.id, roadName, 'forward', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, forwardTarget)),
+        makeApproach(sample.road.id, roadName, 'backward', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, backwardTarget)),
+        makeApproach(sample.road.id, roadName, 'forward', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, forwardTarget)),
     ];
 }
 
@@ -335,6 +339,7 @@ function makeApproach(
     widthM: number,
     lanes: number,
     laneWidthM: number,
+    trafficDirection: TrafficDirection,
     sidewalkWidthM: number,
     nearest,
     direction: Point2D,
@@ -346,6 +351,7 @@ function makeApproach(
         widthM,
         lanes,
         laneWidthM,
+        trafficDirection,
         sidewalkWidthM,
         angleRad: Math.atan2(direction.z, direction.x),
         distanceM: nearest.distanceM,

@@ -15,6 +15,7 @@ import {
     sampleRoadSegment,
     splitPolylineOutsideDiscs,
 } from './core/geometry';
+import { DEFAULT_LANE_WIDTH_M, calculateRoadLaneLayout, normalizeTrafficDirection } from './core/lanes';
 import { analyzeRoadTopology } from './core/topology';
 import {
     buildCircleStrip,
@@ -101,7 +102,8 @@ const state: Record<string, any> = {
             ],
             width: 18,
             lanes: 4,
-            laneWidth: 3.5,
+            laneWidth: DEFAULT_LANE_WIDTH_M,
+            trafficDirection: 'two-way',
             sidewalkWidth: 2,
             sidewalkLeft: true,
             sidewalkRight: true,
@@ -120,7 +122,8 @@ const state: Record<string, any> = {
             ],
             width: 14,
             lanes: 2,
-            laneWidth: 3.5,
+            laneWidth: DEFAULT_LANE_WIDTH_M,
+            trafficDirection: 'two-way',
             sidewalkWidth: 2,
             sidewalkLeft: true,
             sidewalkRight: true,
@@ -139,8 +142,9 @@ const state: Record<string, any> = {
                 { x: 292, z: -208 },
             ],
             width: 9,
-            lanes: 1,
-            laneWidth: 3.5,
+            lanes: 2,
+            laneWidth: DEFAULT_LANE_WIDTH_M,
+            trafficDirection: 'one-way',
             sidewalkWidth: 1.5,
             sidewalkLeft: false,
             sidewalkRight: true,
@@ -158,7 +162,8 @@ const state: Record<string, any> = {
             ],
             width: 10,
             lanes: 2,
-            laneWidth: 3.5,
+            laneWidth: DEFAULT_LANE_WIDTH_M,
+            trafficDirection: 'two-way',
             sidewalkWidth: 1.5,
             sidewalkLeft: true,
             sidewalkRight: true,
@@ -252,6 +257,8 @@ function collectDom() {
         roadWidthInput: document.getElementById('roadWidthInput'),
         roadLanesInput: document.getElementById('roadLanesInput'),
         laneWidthInput: document.getElementById('laneWidthInput'),
+        trafficDirectionInput: document.getElementById('trafficDirectionInput'),
+        laneSummary: document.getElementById('laneSummary'),
         sidewalkWidthInput: document.getElementById('sidewalkWidthInput'),
         sidewalkLeftInput: document.getElementById('sidewalkLeftInput'),
         sidewalkRightInput: document.getElementById('sidewalkRightInput'),
@@ -542,8 +549,8 @@ function bindUi() {
     [
         dom.roadNameInput,
         dom.roadWidthInput,
-        dom.roadLanesInput,
         dom.laneWidthInput,
+        dom.trafficDirectionInput,
         dom.sidewalkWidthInput,
         dom.sidewalkLeftInput,
         dom.sidewalkRightInput,
@@ -564,6 +571,9 @@ function normalizeProjectState() {
     state.roads.forEach((road) => {
         road.profileId ||= state.profiles[0]?.id || 'urban-asphalt';
         road.points = normalizeRoadPoints(road.points);
+        road.trafficDirection = normalizeTrafficDirection(road.trafficDirection);
+        road.laneWidth = clampNumber(road.laneWidth ?? DEFAULT_LANE_WIDTH_M, 2, 5, DEFAULT_LANE_WIDTH_M);
+        road.lanes = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection).totalLanes;
         road.built = road.built !== false;
         road.buildDirty = !!road.buildDirty;
         if (road.built && (!Array.isArray(road.builtAxisPoints) || road.builtAxisPoints.length < 2)) {
@@ -837,34 +847,33 @@ function createJunctionLaneGuideObjects(hub, radius) {
     const objects = [];
     hub.approaches.forEach((approach, approachIndex) => {
         const { direction, normal, length } = getJunctionApproachShape(approach, radius);
-        const { laneCount, laneAreaWidth, laneStep } = getApproachLaneArea(approach);
-        if (laneCount <= 1) return;
+        const layout = getApproachLaneLayout(approach);
+        if (layout.boundaryOffsets.length === 0) return;
 
         const startDistance = Math.max(2.8, Math.min(7, radius * 0.22));
         const endDistance = Math.max(startDistance + 4, length + 1.2);
 
-        for (let laneIndex = 1; laneIndex < laneCount; laneIndex += 1) {
-            const offset = -laneAreaWidth / 2 + laneStep * laneIndex;
+        layout.boundaryOffsets.forEach((boundary, boundaryIndex) => {
             const points = [
                 {
-                    x: hub.center.x + direction.x * startDistance + normal.x * offset,
-                    z: hub.center.z + direction.z * startDistance + normal.z * offset,
+                    x: hub.center.x + direction.x * startDistance + normal.x * boundary.offsetM,
+                    z: hub.center.z + direction.z * startDistance + normal.z * boundary.offsetM,
                 },
                 {
-                    x: hub.center.x + direction.x * endDistance + normal.x * offset,
-                    z: hub.center.z + direction.z * endDistance + normal.z * offset,
+                    x: hub.center.x + direction.x * endDistance + normal.x * boundary.offsetM,
+                    z: hub.center.z + direction.z * endDistance + normal.z * boundary.offsetM,
                 },
             ];
             const dashes = buildDashedLineMeshes(
                 points,
-                LANE_MARKING_WIDTH_M,
+                boundary.kind === 'center' ? LANE_MARKING_WIDTH_M + 0.03 : LANE_MARKING_WIDTH_M,
                 Math.max(2.2, LANE_DASH_M * 0.55),
                 Math.max(1.4, LANE_GAP_M * 0.45),
                 JUNCTION_MARKING_SURFACE_Y,
-                materials.junctionMarking,
+                boundary.kind === 'center' ? materials.junctionYellowMarking : materials.junctionMarking,
             );
             dashes.forEach((dash, dashIndex) => {
-                dash.name = `${hub.id} approach ${approachIndex + 1} lane guide ${laneIndex}.${dashIndex + 1}`;
+                dash.name = `${hub.id} approach ${approachIndex + 1} ${boundary.kind} guide ${boundaryIndex + 1}.${dashIndex + 1}`;
                 dash.renderOrder = 4;
                 dash.userData = {
                     junctionId: hub.id,
@@ -875,7 +884,7 @@ function createJunctionLaneGuideObjects(hub, radius) {
                 };
                 objects.push(dash);
             });
-        }
+        });
     });
     return objects;
 }
@@ -886,7 +895,7 @@ function createJunctionCrosswalkObjects(hub, radius) {
         if (Math.max(0, Number(approach.sidewalkWidthM) || 0) <= 0) return;
 
         const { direction, normal, length, halfWidth } = getJunctionApproachShape(approach, radius);
-        const { laneAreaWidth } = getApproachLaneArea(approach);
+        const laneAreaWidth = getApproachLaneLayout(approach).widthM;
         const stripeHalfLength = Math.max(3, Math.min(halfWidth - 0.55, laneAreaWidth / 2 + 0.9));
         const crosswalkStartDistance = length - CROSSWALK_DEPTH_M;
         const crosswalkEndDistance = length + 0.85;
@@ -1029,16 +1038,8 @@ function getJunctionApproachShape(approach, radius) {
     };
 }
 
-function getApproachLaneArea(approach) {
-    const widthM = Math.max(1, Number(approach.widthM) || 0);
-    const laneCount = Math.max(1, Math.round(Number(approach.lanes) || 1));
-    const laneWidthM = Math.max(0.1, Number(approach.laneWidthM) || widthM / laneCount);
-    const laneAreaWidth = Math.min(widthM, laneWidthM * laneCount);
-    return {
-        laneCount,
-        laneAreaWidth,
-        laneStep: laneAreaWidth / laneCount,
-    };
+function getApproachLaneLayout(approach) {
+    return calculateRoadLaneLayout(approach.widthM, approach.laneWidthM, approach.trafficDirection);
 }
 
 function getJunctionSidewalkWidth(hub) {
@@ -1135,29 +1136,25 @@ function addGeneratedMesh(objects, mesh) {
 
 function createRoadLaneMarkings(axisPoints, road, label = road.name) {
     const objects = [];
-    const laneCount = Math.max(1, Math.round(road.lanes || 1));
-    if (laneCount <= 1) return objects;
+    const layout = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection);
+    road.lanes = layout.totalLanes;
+    if (layout.boundaryOffsets.length === 0) return objects;
 
-    const requestedLaneWidth = Math.max(0.1, Number(road.laneWidth) || road.width / laneCount);
-    const laneAreaWidth = Math.min(road.width, requestedLaneWidth * laneCount);
-    const laneStep = laneAreaWidth / laneCount;
-
-    for (let i = 1; i < laneCount; i += 1) {
-        const offset = -laneAreaWidth / 2 + laneStep * i;
+    layout.boundaryOffsets.forEach((boundary, index) => {
         const dashes = buildDashedLineMeshes(
-            offsetPolyline(axisPoints, offset),
-            LANE_MARKING_WIDTH_M,
+            offsetPolyline(axisPoints, boundary.offsetM),
+            boundary.kind === 'center' ? LANE_MARKING_WIDTH_M + 0.03 : LANE_MARKING_WIDTH_M,
             LANE_DASH_M,
             LANE_GAP_M,
             MARKING_SURFACE_Y,
-            materials.marking,
+            boundary.kind === 'center' ? materials.yellowMarking : materials.marking,
         );
-        dashes.forEach((dash, index) => {
-            dash.name = `${label} lane dash ${i}.${index + 1}`;
+        dashes.forEach((dash, dashIndex) => {
+            dash.name = `${label} ${boundary.kind === 'center' ? 'center divider' : 'lane dash'} ${index + 1}.${dashIndex + 1}`;
             dash.userData = { roadId: road.id, selectable: true, kind: 'road' };
             objects.push(dash);
         });
-    }
+    });
 
     return objects;
 }
@@ -1583,14 +1580,19 @@ function insertRoadPoint(road, segmentIndex, point) {
 function createDefaultRoad(point) {
     state.roadSeq += 1;
     const selected = getSelectedRoad();
+    const laneWidth = selected?.laneWidth || DEFAULT_LANE_WIDTH_M;
+    const trafficDirection = normalizeTrafficDirection(selected?.trafficDirection);
+    const width = selected?.width || 10;
+    const laneLayout = calculateRoadLaneLayout(width, laneWidth, trafficDirection);
     return {
         id: `road-${state.roadSeq}`,
         name: `Road ${state.roadSeq}`,
         profileId: selected?.profileId || state.profiles[0]?.id || 'urban-asphalt',
         points: [{ ...point, smooth: 'corner' }],
-        width: selected?.width || 10,
-        lanes: selected?.lanes || 2,
-        laneWidth: selected?.laneWidth || 3.5,
+        width,
+        lanes: laneLayout.totalLanes,
+        laneWidth,
+        trafficDirection,
         sidewalkWidth: selected?.sidewalkWidth || 2,
         sidewalkLeft: selected?.sidewalkLeft ?? true,
         sidewalkRight: selected?.sidewalkRight ?? true,
@@ -1805,10 +1807,15 @@ function syncInspector() {
         ? `${road.name} node ${state.selectedPointIndex + 1}`
         : `${road.name} ${roadIsEditing ? 'edit' : 'move'}`;
     dom.deleteSelectedBtn.textContent = selectedPoint ? 'Delete selected node' : 'Delete selected road';
+    const laneLayout = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection);
+    road.lanes = laneLayout.totalLanes;
     dom.roadNameInput.value = road.name;
     dom.roadWidthInput.value = formatNumber(road.width);
-    dom.roadLanesInput.value = String(road.lanes);
+    dom.trafficDirectionInput.value = laneLayout.trafficDirection;
+    dom.roadLanesInput.value = String(laneLayout.totalLanes);
     dom.laneWidthInput.value = formatNumber(road.laneWidth);
+    dom.laneSummary.textContent = formatLaneSummary(laneLayout);
+    dom.roadLanesInput.title = formatLaneSummary(laneLayout);
     dom.sidewalkWidthInput.value = formatNumber(road.sidewalkWidth);
     dom.sidewalkLeftInput.checked = !!road.sidewalkLeft;
     dom.sidewalkRightInput.checked = !!road.sidewalkRight;
@@ -1846,8 +1853,9 @@ function updateSelectedRoadFromInspector() {
     if (!road) return;
     road.name = dom.roadNameInput.value.trim() || road.name;
     road.width = clampNumber(dom.roadWidthInput.value, 2, 80, road.width);
-    road.lanes = Math.round(clampNumber(dom.roadLanesInput.value, 1, 8, road.lanes));
     road.laneWidth = clampNumber(dom.laneWidthInput.value, 2, 5, road.laneWidth);
+    road.trafficDirection = normalizeTrafficDirection(dom.trafficDirectionInput.value);
+    road.lanes = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection).totalLanes;
     road.sidewalkWidth = clampNumber(dom.sidewalkWidthInput.value, 0, 8, road.sidewalkWidth);
     road.sidewalkLeft = dom.sidewalkLeftInput.checked;
     road.sidewalkRight = dom.sidewalkRightInput.checked;
@@ -2361,6 +2369,14 @@ function clampNumber(value, min, max, fallback) {
 
 function formatNumber(value) {
     return Number(value || 0).toFixed(2).replace(/\.00$/, '');
+}
+
+function formatLaneSummary(layout) {
+    const laneWidths = layout.laneWidthsM.map((width) => `${formatNumber(width)} m`).join(' / ');
+    if (layout.trafficDirection === 'one-way') {
+        return `${layout.totalLanes} one-way lane${layout.totalLanes === 1 ? '' : 's'} · widths ${laneWidths}`;
+    }
+    return `${layout.totalLanes} lanes · ${layout.lanesPerDirection} each way · widths per direction ${laneWidths}`;
 }
 
 function formatSmoothMode(mode) {
