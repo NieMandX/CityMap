@@ -17,6 +17,7 @@ CityMap is an early RoadBLD-like web prototype for drawing road splines in one 3
 - Junction-aware road rendering trims generated road meshes around detected hubs.
 - Road-road hubs generate a polygon asphalt surface from arbitrary approach directions.
 - Road-road hubs add generated curbs, sidewalk aprons, and lane guide markings around the polygon surface.
+- Road-road hubs add approach crosswalk stripes, stop bars, and central dashed conflict guides.
 - Demo satellite/scheme/mask underlays, image upload, and optional Yandex Static API underlay hook.
 - JSON project export and GLB model export.
 

@@ -40,11 +40,17 @@ const SIDEWALK_SURFACE_Y = 0.28;
 const CURB_BASE_Y = 0;
 const CURB_SURFACE_Y = 0.42;
 const MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.018;
+const JUNCTION_MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.09;
 const CURB_WIDTH_M = 0.32;
 const EDGE_MARKING_INSET_M = 0.45;
 const LANE_MARKING_WIDTH_M = 0.13;
 const LANE_DASH_M = 4.2;
 const LANE_GAP_M = 5.8;
+const CROSSWALK_DEPTH_M = 4.2;
+const CROSSWALK_STRIPE_WIDTH_M = 0.58;
+const CROSSWALK_STRIPE_GAP_M = 0.78;
+const STOP_BAR_WIDTH_M = 0.52;
+const CONFLICT_GUIDE_WIDTH_M = 0.16;
 const materials: Record<string, any> = {};
 const dom: Record<string, any> = {};
 const state: Record<string, any> = {
@@ -386,6 +392,18 @@ function initMaterials() {
     });
     materials.marking = new THREE.MeshBasicMaterial({ color: 0xf5f7f8 });
     materials.yellowMarking = new THREE.MeshBasicMaterial({ color: 0xffd23f });
+    materials.junctionMarking = new THREE.MeshBasicMaterial({
+        color: 0xf9fbff,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+    });
+    materials.junctionYellowMarking = new THREE.MeshBasicMaterial({
+        color: 0xffd23f,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+    });
     materials.sidewalk = new THREE.MeshStandardMaterial({
         color: 0x858b8e,
         roughness: 0.92,
@@ -733,6 +751,8 @@ function createJunctionObjects(topology) {
             addGeneratedMesh(objects, surface);
             objects.push(...createJunctionBoundaryObjects(hub, surfacePoints));
             objects.push(...createJunctionLaneGuideObjects(hub, radius));
+            objects.push(...createJunctionCrosswalkObjects(hub, radius));
+            objects.push(...createJunctionConflictGuideObjects(hub, radius));
         });
 
     return objects;
@@ -817,13 +837,9 @@ function createJunctionLaneGuideObjects(hub, radius) {
     const objects = [];
     hub.approaches.forEach((approach, approachIndex) => {
         const { direction, normal, length } = getJunctionApproachShape(approach, radius);
-        const laneCount = Math.max(1, Math.round(Number(approach.lanes) || 1));
+        const { laneCount, laneAreaWidth, laneStep } = getApproachLaneArea(approach);
         if (laneCount <= 1) return;
 
-        const widthM = Math.max(1, Number(approach.widthM) || 0);
-        const laneWidthM = Math.max(0.1, Number(approach.laneWidthM) || widthM / laneCount);
-        const laneAreaWidth = Math.min(widthM, laneWidthM * laneCount);
-        const laneStep = laneAreaWidth / laneCount;
         const startDistance = Math.max(2.8, Math.min(7, radius * 0.22));
         const endDistance = Math.max(startDistance + 4, length + 1.2);
 
@@ -844,8 +860,8 @@ function createJunctionLaneGuideObjects(hub, radius) {
                 LANE_MARKING_WIDTH_M,
                 Math.max(2.2, LANE_DASH_M * 0.55),
                 Math.max(1.4, LANE_GAP_M * 0.45),
-                MARKING_SURFACE_Y + 0.012,
-                materials.marking,
+                JUNCTION_MARKING_SURFACE_Y,
+                materials.junctionMarking,
             );
             dashes.forEach((dash, dashIndex) => {
                 dash.name = `${hub.id} approach ${approachIndex + 1} lane guide ${laneIndex}.${dashIndex + 1}`;
@@ -864,6 +880,144 @@ function createJunctionLaneGuideObjects(hub, radius) {
     return objects;
 }
 
+function createJunctionCrosswalkObjects(hub, radius) {
+    const objects = [];
+    hub.approaches.forEach((approach, approachIndex) => {
+        if (Math.max(0, Number(approach.sidewalkWidthM) || 0) <= 0) return;
+
+        const { direction, normal, length, halfWidth } = getJunctionApproachShape(approach, radius);
+        const { laneAreaWidth } = getApproachLaneArea(approach);
+        const stripeHalfLength = Math.max(3, Math.min(halfWidth - 0.55, laneAreaWidth / 2 + 0.9));
+        const crosswalkStartDistance = length - CROSSWALK_DEPTH_M;
+        const crosswalkEndDistance = length + 0.85;
+        const firstStripeOffset = -stripeHalfLength + CROSSWALK_STRIPE_WIDTH_M / 2;
+        const lastStripeOffset = stripeHalfLength - CROSSWALK_STRIPE_WIDTH_M / 2;
+        let stripeIndex = 0;
+
+        for (
+            let offset = firstStripeOffset;
+            offset <= lastStripeOffset + EPS;
+            offset += CROSSWALK_STRIPE_WIDTH_M + CROSSWALK_STRIPE_GAP_M
+        ) {
+            stripeIndex += 1;
+            const stripe = buildRibbonMesh(
+                [
+                    {
+                        x: hub.center.x + direction.x * crosswalkStartDistance + normal.x * offset,
+                        z: hub.center.z + direction.z * crosswalkStartDistance + normal.z * offset,
+                    },
+                    {
+                        x: hub.center.x + direction.x * crosswalkEndDistance + normal.x * offset,
+                        z: hub.center.z + direction.z * crosswalkEndDistance + normal.z * offset,
+                    },
+                ],
+                CROSSWALK_STRIPE_WIDTH_M,
+                JUNCTION_MARKING_SURFACE_Y + 0.004,
+                materials.junctionMarking,
+            );
+            stripe.name = `${hub.id} approach ${approachIndex + 1} crosswalk stripe ${stripeIndex}`;
+            stripe.renderOrder = 5;
+            stripe.userData = {
+                junctionId: hub.id,
+                roadId: approach.roadId,
+                selectable: true,
+                kind: 'junction',
+                roadIds: hub.roadIds,
+            };
+            addGeneratedMesh(objects, stripe);
+        }
+
+        const stopDistance = length + Math.min(2.4, Math.max(1.2, halfWidth * 0.32));
+        const stopLine = buildRibbonMesh(
+            [
+                {
+                    x: hub.center.x + direction.x * stopDistance + normal.x * (laneAreaWidth / 2),
+                    z: hub.center.z + direction.z * stopDistance + normal.z * (laneAreaWidth / 2),
+                },
+                {
+                    x: hub.center.x + direction.x * stopDistance - normal.x * (laneAreaWidth / 2),
+                    z: hub.center.z + direction.z * stopDistance - normal.z * (laneAreaWidth / 2),
+                },
+            ],
+            STOP_BAR_WIDTH_M,
+            JUNCTION_MARKING_SURFACE_Y + 0.008,
+            materials.junctionMarking,
+        );
+        stopLine.name = `${hub.id} approach ${approachIndex + 1} stop bar`;
+        stopLine.renderOrder = 5;
+        stopLine.userData = {
+            junctionId: hub.id,
+            roadId: approach.roadId,
+            selectable: true,
+            kind: 'junction',
+            roadIds: hub.roadIds,
+        };
+        addGeneratedMesh(objects, stopLine);
+    });
+    return objects;
+}
+
+function createJunctionConflictGuideObjects(hub, radius) {
+    const sorted = [...hub.approaches]
+        .map((approach) => ({
+            ...approach,
+            normalizedAngleRad: normalizeAngleRad(approach.angleRad),
+        }))
+        .sort((a, b) => a.normalizedAngleRad - b.normalizedAngleRad);
+    const objects = [];
+    if (sorted.length < 3) return objects;
+
+    const startDistance = Math.max(4.2, Math.min(8, radius * 0.32));
+    sorted.forEach((approach, index) => {
+        const next = sorted[(index + 1) % sorted.length];
+        const gap = angleGapRad(approach.normalizedAngleRad, next.normalizedAngleRad);
+        if (gap < Math.PI / 8) return;
+
+        const aDirection = normalizeDirection(approach.direction || { x: Math.cos(approach.angleRad), z: Math.sin(approach.angleRad) });
+        const bDirection = normalizeDirection(next.direction || { x: Math.cos(next.angleRad), z: Math.sin(next.angleRad) });
+        const start = {
+            x: hub.center.x + aDirection.x * startDistance,
+            z: hub.center.z + aDirection.z * startDistance,
+        };
+        const end = {
+            x: hub.center.x + bDirection.x * startDistance,
+            z: hub.center.z + bDirection.z * startDistance,
+        };
+        const controlDistance = Math.max(1.2, startDistance * 0.22);
+        const midDirection = normalizeDirection({
+            x: aDirection.x + bDirection.x,
+            z: aDirection.z + bDirection.z,
+        });
+        const control = {
+            x: hub.center.x + midDirection.x * controlDistance,
+            z: hub.center.z + midDirection.z * controlDistance,
+        };
+        const guidePoints = sampleQuadraticPoints(start, control, end, 10);
+        const dashes = buildDashedLineMeshes(
+            guidePoints,
+            CONFLICT_GUIDE_WIDTH_M,
+            1.8,
+            1.2,
+            JUNCTION_MARKING_SURFACE_Y + 0.012,
+            materials.junctionYellowMarking,
+        );
+        dashes.forEach((dash, dashIndex) => {
+            dash.name = `${hub.id} conflict guide ${index + 1}.${dashIndex + 1}`;
+            dash.renderOrder = 5;
+            dash.userData = {
+                junctionId: hub.id,
+                selectable: true,
+                kind: 'junction',
+                roadIds: hub.roadIds,
+                fromRoadId: approach.roadId,
+                toRoadId: next.roadId,
+            };
+            addGeneratedMesh(objects, dash);
+        });
+    });
+    return objects;
+}
+
 function getJunctionApproachShape(approach, radius) {
     const direction = normalizeDirection(approach.direction || { x: Math.cos(approach.angleRad), z: Math.sin(approach.angleRad) });
     const widthM = Math.max(1, Number(approach.widthM) || 0);
@@ -872,6 +1026,18 @@ function getJunctionApproachShape(approach, radius) {
         normal: { x: -direction.z, z: direction.x },
         length: Math.max(radius, widthM * 0.95 + 8),
         halfWidth: Math.max(3.4, widthM * 0.5 + 1.4),
+    };
+}
+
+function getApproachLaneArea(approach) {
+    const widthM = Math.max(1, Number(approach.widthM) || 0);
+    const laneCount = Math.max(1, Math.round(Number(approach.lanes) || 1));
+    const laneWidthM = Math.max(0.1, Number(approach.laneWidthM) || widthM / laneCount);
+    const laneAreaWidth = Math.min(widthM, laneWidthM * laneCount);
+    return {
+        laneCount,
+        laneAreaWidth,
+        laneStep: laneAreaWidth / laneCount,
     };
 }
 
@@ -888,6 +1054,29 @@ function normalizeDirection(direction) {
         x: direction.x / length,
         z: direction.z / length,
     };
+}
+
+function sampleQuadraticPoints(start, control, end, steps = 8) {
+    const points = [];
+    for (let i = 0; i <= steps; i += 1) {
+        const t = i / steps;
+        const inv = 1 - t;
+        points.push({
+            x: inv * inv * start.x + 2 * inv * t * control.x + t * t * end.x,
+            z: inv * inv * start.z + 2 * inv * t * control.z + t * t * end.z,
+        });
+    }
+    return points;
+}
+
+function normalizeAngleRad(angleRad) {
+    const twoPi = Math.PI * 2;
+    return ((angleRad % twoPi) + twoPi) % twoPi;
+}
+
+function angleGapRad(a, b) {
+    const twoPi = Math.PI * 2;
+    return ((b - a) + twoPi) % twoPi;
 }
 
 function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enabled) {
