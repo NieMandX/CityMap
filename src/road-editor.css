@@ -475,6 +475,28 @@ select:disabled {
     transform: rotate(-24deg) skewY(18deg);
 }
 
+.tool-glyph.move::before,
+.tool-glyph.move::after {
+    content: "";
+    position: absolute;
+}
+
+.tool-glyph.move::before {
+    left: 3px;
+    top: 10px;
+    width: 16px;
+    border-top: 2px solid currentColor;
+    box-shadow: 0 -6px 0 -1px currentColor, 0 6px 0 -1px currentColor;
+}
+
+.tool-glyph.move::after {
+    left: 10px;
+    top: 3px;
+    height: 16px;
+    border-left: 2px solid currentColor;
+    box-shadow: -6px 0 0 -1px currentColor, 6px 0 0 -1px currentColor;
+}
+
 .tool-glyph.spline::before,
 .tool-glyph.spline::after {
     content: "";

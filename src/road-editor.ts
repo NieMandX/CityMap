@@ -69,6 +69,8 @@ const state: Record<string, any> = {
     editingRoadId: null,
     activeDrawRoadId: null,
     drag: null,
+    move: null,
+    lastGroundPoint: null,
     underlayMode: 'satellite',
     showWireframe: true,
     showNormals: false,
@@ -594,6 +596,9 @@ function normalizeProjectState() {
 }
 
 function setMode(mode) {
+    if (state.move && mode !== 'move') {
+        cancelRoadMove({ restoreMode: false, silent: true });
+    }
     state.mode = mode;
     state.activeDrawRoadId = mode === 'draw' ? state.activeDrawRoadId : null;
     if (mode !== 'select') {
@@ -603,7 +608,11 @@ function setMode(mode) {
     dom.editor.dataset.mode = mode;
     dom.toolButtons.forEach((btn) => btn.classList.toggle('is-active', btn.dataset.tool === mode));
     if (mode === 'draw') setStatus('Draw mode: click to add road spline points. Press Enter to start a new road.');
-    if (mode === 'select') setStatus('Select mode: click a road to move it, double-click it to edit points.');
+    if (mode === 'move') {
+        beginSelectedRoadMove();
+        return;
+    }
+    if (mode === 'select') setStatus('Select mode: click a road to select it. Use Move or G to move it.');
     if (mode === 'roundabout') setStatus('Roundabout mode: click the ground plane to place a procedural roundabout.');
 }
 
@@ -762,6 +771,138 @@ function rebuildChangedRoadSceneForDrag(roadId) {
     }
     roadGroup.updateMatrixWorld(true);
     helperGroup.updateMatrixWorld(true);
+}
+
+function beginSelectedRoadMove(anchorPoint = null) {
+    const road = getSelectedRoad();
+    if (!road) {
+        state.move = null;
+        setStatus('Move tool: select a road first.');
+        return false;
+    }
+
+    state.selectedRoundaboutId = null;
+    state.editingRoadId = null;
+    state.selectedPointIndex = null;
+    state.activeDrawRoadId = null;
+    state.move = {
+        type: 'road',
+        roadId: road.id,
+        start: anchorPoint ? { ...anchorPoint } : null,
+        originalPoints: road.points.map((point) => ({ ...point })),
+        originalBuiltAxisPoints: Array.isArray(road.builtAxisPoints)
+            ? road.builtAxisPoints.map((point) => ({ ...point }))
+            : [],
+        currentDx: 0,
+        currentDz: 0,
+    };
+    controls.enabled = false;
+    prepareRoadMovePreview(road.id);
+    syncInspector();
+    setStatus(`${road.name}: move active. Move the mouse, then click to confirm.`);
+    return true;
+}
+
+function prepareRoadMovePreview(roadId) {
+    const road = getRoadById(roadId);
+    if (!road) return;
+
+    const excludedRoadIds = new Set([roadId]);
+    const renderTopology = filterTopologyForRender(state.topology, excludedRoadIds);
+    state.topologyDirty = true;
+
+    removeGroupObjects(roadGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
+    removeGroupObjects(helperGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
+    clearGroup(exportGroup);
+
+    state.clipRoadsForCurrentRebuild = true;
+    state.renderTopologyForCurrentRebuild = renderTopology;
+    state.unclippedRoadIdsForCurrentRebuild = new Set([roadId]);
+
+    try {
+        createRoadObjects(road).forEach((obj) => roadGroup.add(obj));
+        createRoadHelpers(road).forEach((obj) => helperGroup.add(obj));
+    } finally {
+        state.clipRoadsForCurrentRebuild = true;
+        state.renderTopologyForCurrentRebuild = null;
+        state.unclippedRoadIdsForCurrentRebuild = new Set();
+    }
+    roadGroup.updateMatrixWorld(true);
+    helperGroup.updateMatrixWorld(true);
+}
+
+function updateRoadMovePreview(ground) {
+    if (!state.move || state.move.type !== 'road' || !ground) return;
+    if (!state.move.start) {
+        state.move.start = { ...ground };
+        return;
+    }
+    const dx = ground.x - state.move.start.x;
+    const dz = ground.z - state.move.start.z;
+    state.move.currentDx = dx;
+    state.move.currentDz = dz;
+    moveRoadSceneObjects(state.move.roadId, dx, dz);
+}
+
+function moveRoadSceneObjects(roadId, dx, dz) {
+    [roadGroup, helperGroup].forEach((group) => {
+        group.children.forEach((obj) => {
+            if (!isRoadOwnedSceneObject(obj, roadId)) return;
+            obj.position.set(dx, 0, dz);
+        });
+    });
+    roadGroup.updateMatrixWorld(true);
+    helperGroup.updateMatrixWorld(true);
+}
+
+function confirmRoadMove() {
+    const move = state.move;
+    if (!move || move.type !== 'road') return;
+    const road = getRoadById(move.roadId);
+    const dx = Number(move.currentDx) || 0;
+    const dz = Number(move.currentDz) || 0;
+    state.move = null;
+    controls.enabled = true;
+    if (!road) {
+        setMode('select');
+        rebuildScene();
+        return;
+    }
+    road.points = translateRoadPoints(move.originalPoints, dx, dz);
+    if (road.built && move.originalBuiltAxisPoints.length >= 2) {
+        road.builtAxisPoints = translateRoadPoints(move.originalBuiltAxisPoints, dx, dz);
+        road.buildDirty = false;
+    } else {
+        rebuildGeneratedRoadAfterGeometryChange(road);
+    }
+    setMode('select');
+    rebuildSceneForChangedRoad(road.id);
+    setStatus(`${road.name} moved. Junctions recalculated.`);
+}
+
+function cancelRoadMove(options: { restoreMode?: boolean; silent?: boolean } = {}) {
+    const move = state.move;
+    if (!move || move.type !== 'road') return;
+    const road = getRoadById(move.roadId);
+    state.move = null;
+    controls.enabled = true;
+    if (road) {
+        road.points = move.originalPoints.map((point) => ({ ...point }));
+        if (move.originalBuiltAxisPoints.length >= 2) {
+            road.builtAxisPoints = move.originalBuiltAxisPoints.map((point) => ({ ...point }));
+        }
+    }
+    if (options.restoreMode !== false) setMode('select');
+    rebuildScene();
+    if (!options.silent) setStatus(road ? `${road.name} move canceled.` : 'Move canceled.');
+}
+
+function translateRoadPoints(points, dx, dz) {
+    return points.map((point) => ({
+        ...point,
+        x: point.x + dx,
+        z: point.z + dz,
+    }));
 }
 
 function rebuildSceneForChangedRoad(roadId) {
@@ -1570,9 +1711,28 @@ function disposeObject(obj) {
 function onPointerDown(event) {
     const ground = getGroundPoint(event);
     if (!ground) return;
+    state.lastGroundPoint = { ...ground };
+
+    if (state.move) {
+        event.preventDefault();
+        updateRoadMovePreview(ground);
+        confirmRoadMove();
+        return;
+    }
 
     if (state.mode === 'draw') {
         addDrawPoint(ground);
+        return;
+    }
+
+    if (state.mode === 'move') {
+        const roadHit = findNearestRoad(ground);
+        if (!roadHit) {
+            setStatus('Move tool: click a road to select it for moving.');
+            return;
+        }
+        selectRoad(roadHit.road.id, null);
+        beginSelectedRoadMove(ground);
         return;
     }
 
@@ -1619,28 +1779,27 @@ function onPointerDown(event) {
             return;
         }
         if (state.selectedRoadId === roadHit.road.id && !isRoadEditing(roadHit.road)) {
-            state.drag = {
-                type: 'road',
-                roadId: roadHit.road.id,
-                start: ground,
-                originalPoints: roadHit.road.points.map((point) => ({ ...point })),
-            };
-            controls.enabled = false;
-            setStatus(`Moving ${roadHit.road.name}.`);
+            setStatus(`Selected ${roadHit.road.name}. Press G or Move to move it.`);
             return;
         }
         selectRoad(roadHit.road.id, null);
         rebuildScene();
-        setStatus(`Selected ${roadHit.road.name}. Double-click to edit points.`);
+        setStatus(`Selected ${roadHit.road.name}. Press G or Move to move it.`);
     }
 }
 
 function onPointerMove(event) {
     const ground = getGroundPoint(event);
     if (!ground) return;
+    state.lastGroundPoint = { ...ground };
 
     const geo = localToGeo(ground);
     dom.coordText.textContent = `${geo.lat.toFixed(6)} N, ${geo.lon.toFixed(6)} E`;
+
+    if (state.move) {
+        updateRoadMovePreview(ground);
+        return;
+    }
 
     if (!state.drag) return;
     if (state.drag.type === 'point') {
@@ -1682,6 +1841,7 @@ function onPointerMove(event) {
 }
 
 function onPointerUp() {
+    if (state.move) return;
     if (state.drag) {
         const dragType = state.drag.type;
         const changedRoadId = dragType === 'point' || dragType === 'road' ? state.drag.roadId : null;
@@ -1702,6 +1862,7 @@ function onPointerUp() {
 function onDoubleClick(event) {
     if (state.mode !== 'select' || isEditableTarget(event.target)) return;
     event.preventDefault();
+    if (state.move) return;
     state.drag = null;
     controls.enabled = true;
     const editingRoad = getSelectedRoad();
@@ -1726,12 +1887,22 @@ function onDoubleClick(event) {
 function onKeyDown(event) {
     if (isEditableTarget(event.target)) return;
     if (event.key === 'Escape') {
+        if (state.move) {
+            event.preventDefault();
+            cancelRoadMove();
+            return;
+        }
         state.selectedPointIndex = null;
         state.activeDrawRoadId = null;
         state.selectedRoundaboutId = null;
         state.editingRoadId = null;
         setMode('select');
         rebuildScene();
+    }
+    if (event.key.toLowerCase() === 'g') {
+        event.preventDefault();
+        setMode('move');
+        return;
     }
     if (event.key === 'Enter' && state.mode === 'draw') {
         state.activeDrawRoadId = null;
