@@ -5,6 +5,8 @@ CityMap is an early RoadBLD-like web prototype for drawing road splines in one 3
 ## Current MVP
 
 - Vite + TypeScript application shell.
+- Road math is separated into `src/core/geometry.ts`.
+- Three.js mesh generation is separated into `src/render/mesh-builders.ts`.
 - Single Three.js WebGPU viewport with perspective and top views.
 - Automatic WebGL2 fallback through Three.js `WebGPURenderer`; force fallback with `?renderer=webgl`.
 - Road spline drawing by clicking the ground plane.
@@ -44,6 +46,12 @@ npm run build:pages-root
 ```
 
 That command copies the production Vite output into root `index.html` and `assets/`.
+
+## Architecture Direction
+
+- `src/road-editor.ts` owns application state, UI, input, scene orchestration, and export flow.
+- `src/core/` is renderer-independent road/topology math.
+- `src/render/` owns Three.js/WebGPU mesh and debug-layer construction.
 
 ## Notes
 
