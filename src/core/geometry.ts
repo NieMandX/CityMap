@@ -238,6 +238,41 @@ export function convexHull(points: Point2D[] = []) {
     return [...lower, ...upper];
 }
 
+export function offsetConvexPolygon(points: Point2D[] = [], offsetM = 0) {
+    const clean = points
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.z))
+        .map((point) => ({ x: point.x, z: point.z }));
+    if (clean.length < 3 || Math.abs(offsetM) <= EPS) return clean;
+
+    const orientation = polygonSignedArea(clean) >= 0 ? 1 : -1;
+    const offsetLines = clean.map((point, index) => {
+        const next = clean[(index + 1) % clean.length];
+        const dx = next.x - point.x;
+        const dz = next.z - point.z;
+        const length = Math.hypot(dx, dz) || 1;
+        const outward = {
+            x: orientation * dz / length,
+            z: orientation * -dx / length,
+        };
+        return {
+            point: {
+                x: point.x + outward.x * offsetM,
+                z: point.z + outward.z * offsetM,
+            },
+            direction: { x: dx / length, z: dz / length },
+        };
+    });
+
+    return clean.map((point, index) => {
+        const previous = offsetLines[(index - 1 + offsetLines.length) % offsetLines.length];
+        const current = offsetLines[index];
+        return intersectLines(previous.point, previous.direction, current.point, current.direction) || {
+            x: point.x + (current.point.x - clean[index].x),
+            z: point.z + (current.point.z - clean[index].z),
+        };
+    });
+}
+
 export function nearestPointOnSegment(point: Point2D, a: Point2D, b: Point2D) {
     const vx = b.x - a.x;
     const vz = b.z - a.z;
@@ -337,4 +372,25 @@ function pushFinishedPolyline(segments: Point2D[][], points: Point2D[]) {
 
 function crossPoints(origin: Point2D, a: Point2D, b: Point2D) {
     return (a.x - origin.x) * (b.z - origin.z) - (a.z - origin.z) * (b.x - origin.x);
+}
+
+function polygonSignedArea(points: Point2D[]) {
+    let area = 0;
+    for (let i = 0; i < points.length; i += 1) {
+        const next = points[(i + 1) % points.length];
+        area += points[i].x * next.z - next.x * points[i].z;
+    }
+    return area / 2;
+}
+
+function intersectLines(a: Point2D, da: Point2D, b: Point2D, db: Point2D) {
+    const cross = da.x * db.z - da.z * db.x;
+    if (Math.abs(cross) <= EPS) return null;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const t = (dx * db.z - dz * db.x) / cross;
+    return {
+        x: a.x + da.x * t,
+        z: a.z + da.z * t,
+    };
 }

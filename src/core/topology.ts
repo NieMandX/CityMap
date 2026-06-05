@@ -17,6 +17,10 @@ export type RoadTopologySource = RoadAxisSource & {
     name?: string;
     width?: number;
     lanes?: number;
+    laneWidth?: number;
+    sidewalkWidth?: number;
+    sidewalkLeft?: boolean;
+    sidewalkRight?: boolean;
     built?: boolean;
     builtAxisPoints?: Point2D[];
 };
@@ -35,6 +39,9 @@ export type JunctionApproach = {
     roadName: string;
     side: 'start' | 'end' | 'backward' | 'forward';
     widthM: number;
+    lanes: number;
+    laneWidthM: number;
+    sidewalkWidthM: number;
     angleRad: number;
     distanceM: number;
     nearestPoint: Point2D;
@@ -297,32 +304,49 @@ function buildRoadApproaches(sample: SampledRoad, center: Point2D, endpointSnapR
     const nearest = nearestOnSampledRoad(sample, center);
     const roadName = sample.road.name || sample.road.id;
     const widthM = Math.max(1, Number(sample.road.width) || 0);
+    const lanes = Math.max(1, Math.round(Number(sample.road.lanes) || Math.max(1, widthM / 3.5)));
+    const laneWidthM = Math.max(0.1, Number(sample.road.laneWidth) || widthM / lanes);
+    const sidewalkEnabled = sample.road.sidewalkLeft !== false || sample.road.sidewalkRight !== false;
+    const sidewalkWidthM = sidewalkEnabled ? Math.max(0, Number(sample.road.sidewalkWidth) || 0) : 0;
     const lookahead = Math.max(8, Math.min(22, sample.totalM * 0.2));
 
     if (nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
-        return [makeApproach(sample.road.id, roadName, 'start', widthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'start', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
     }
 
     if (sample.totalM - nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
-        return [makeApproach(sample.road.id, roadName, 'end', widthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'end', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
     }
 
     const backwardTarget = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
     const forwardTarget = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
     return [
-        makeApproach(sample.road.id, roadName, 'backward', widthM, nearest, directionBetween(nearest.point, backwardTarget)),
-        makeApproach(sample.road.id, roadName, 'forward', widthM, nearest, directionBetween(nearest.point, forwardTarget)),
+        makeApproach(sample.road.id, roadName, 'backward', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, backwardTarget)),
+        makeApproach(sample.road.id, roadName, 'forward', widthM, lanes, laneWidthM, sidewalkWidthM, nearest, directionBetween(nearest.point, forwardTarget)),
     ];
 }
 
-function makeApproach(roadId: string, roadName: string, side: JunctionApproach['side'], widthM: number, nearest, direction: Point2D): JunctionApproach {
+function makeApproach(
+    roadId: string,
+    roadName: string,
+    side: JunctionApproach['side'],
+    widthM: number,
+    lanes: number,
+    laneWidthM: number,
+    sidewalkWidthM: number,
+    nearest,
+    direction: Point2D,
+): JunctionApproach {
     return {
         roadId,
         roadName,
         side,
         widthM,
+        lanes,
+        laneWidthM,
+        sidewalkWidthM,
         angleRad: Math.atan2(direction.z, direction.x),
         distanceM: nearest.distanceM,
         nearestPoint: nearest.point,

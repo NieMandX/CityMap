@@ -8,6 +8,7 @@ import {
     EPS,
     nearestPointOnSegment,
     normalizeRoadPoints,
+    offsetConvexPolygon,
     offsetPolyline,
     polylineLength,
     sampleRoadAxis,
@@ -23,6 +24,7 @@ import {
     buildLine,
     buildMeshNormals,
     buildMeshWireframe,
+    buildPolygonBandVolumeMesh,
     buildPolygonVolumeMesh,
     buildRibbonMesh,
     buildRibbonVolumeMesh,
@@ -729,6 +731,8 @@ function createJunctionObjects(topology) {
                 roadIds: hub.roadIds,
             };
             addGeneratedMesh(objects, surface);
+            objects.push(...createJunctionBoundaryObjects(hub, surfacePoints));
+            objects.push(...createJunctionLaneGuideObjects(hub, radius));
         });
 
     return objects;
@@ -739,10 +743,7 @@ function createJunctionSurfacePoints(hub) {
     const points = [];
 
     hub.approaches.forEach((approach) => {
-        const direction = approach.direction || { x: Math.cos(approach.angleRad), z: Math.sin(approach.angleRad) };
-        const length = Math.max(radius, (Number(approach.widthM) || 6) * 0.95 + 8);
-        const halfWidth = Math.max(3.4, (Number(approach.widthM) || 6) * 0.5 + 1.4);
-        const normal = { x: -direction.z, z: direction.x };
+        const { direction, normal, length, halfWidth } = getJunctionApproachShape(approach, radius);
         const shoulder = {
             x: hub.center.x + direction.x * length,
             z: hub.center.z + direction.z * length,
@@ -764,6 +765,129 @@ function createJunctionSurfacePoints(hub) {
     });
 
     return convexHull(points);
+}
+
+function createJunctionBoundaryObjects(hub, asphaltPoints) {
+    const objects = [];
+    if (asphaltPoints.length < 3) return objects;
+
+    const sidewalkWidth = getJunctionSidewalkWidth(hub);
+    const innerCurbOuter = offsetConvexPolygon(asphaltPoints, CURB_WIDTH_M);
+    const innerCurb = buildPolygonBandVolumeMesh(
+        asphaltPoints,
+        innerCurbOuter,
+        CURB_SURFACE_Y,
+        CURB_BASE_Y,
+        materials.curb,
+    );
+    innerCurb.name = `${hub.id} junction inner curb`;
+    innerCurb.userData = { junctionId: hub.id, selectable: true, kind: 'junction', roadIds: hub.roadIds };
+    addGeneratedMesh(objects, innerCurb);
+
+    if (sidewalkWidth <= 0) return objects;
+
+    const sidewalkOuter = offsetConvexPolygon(asphaltPoints, CURB_WIDTH_M + sidewalkWidth);
+    const sidewalk = buildPolygonBandVolumeMesh(
+        innerCurbOuter,
+        sidewalkOuter,
+        SIDEWALK_SURFACE_Y,
+        SIDEWALK_BASE_Y,
+        materials.sidewalk,
+    );
+    sidewalk.name = `${hub.id} junction sidewalk apron`;
+    sidewalk.userData = { junctionId: hub.id, selectable: true, kind: 'junction', roadIds: hub.roadIds };
+    addGeneratedMesh(objects, sidewalk);
+
+    const outerCurbOuter = offsetConvexPolygon(asphaltPoints, CURB_WIDTH_M + sidewalkWidth + CURB_WIDTH_M);
+    const outerCurb = buildPolygonBandVolumeMesh(
+        sidewalkOuter,
+        outerCurbOuter,
+        CURB_SURFACE_Y,
+        CURB_BASE_Y,
+        materials.curb,
+    );
+    outerCurb.name = `${hub.id} junction outer curb`;
+    outerCurb.userData = { junctionId: hub.id, selectable: true, kind: 'junction', roadIds: hub.roadIds };
+    addGeneratedMesh(objects, outerCurb);
+
+    return objects;
+}
+
+function createJunctionLaneGuideObjects(hub, radius) {
+    const objects = [];
+    hub.approaches.forEach((approach, approachIndex) => {
+        const { direction, normal, length } = getJunctionApproachShape(approach, radius);
+        const laneCount = Math.max(1, Math.round(Number(approach.lanes) || 1));
+        if (laneCount <= 1) return;
+
+        const widthM = Math.max(1, Number(approach.widthM) || 0);
+        const laneWidthM = Math.max(0.1, Number(approach.laneWidthM) || widthM / laneCount);
+        const laneAreaWidth = Math.min(widthM, laneWidthM * laneCount);
+        const laneStep = laneAreaWidth / laneCount;
+        const startDistance = Math.max(2.8, Math.min(7, radius * 0.22));
+        const endDistance = Math.max(startDistance + 4, length + 1.2);
+
+        for (let laneIndex = 1; laneIndex < laneCount; laneIndex += 1) {
+            const offset = -laneAreaWidth / 2 + laneStep * laneIndex;
+            const points = [
+                {
+                    x: hub.center.x + direction.x * startDistance + normal.x * offset,
+                    z: hub.center.z + direction.z * startDistance + normal.z * offset,
+                },
+                {
+                    x: hub.center.x + direction.x * endDistance + normal.x * offset,
+                    z: hub.center.z + direction.z * endDistance + normal.z * offset,
+                },
+            ];
+            const dashes = buildDashedLineMeshes(
+                points,
+                LANE_MARKING_WIDTH_M,
+                Math.max(2.2, LANE_DASH_M * 0.55),
+                Math.max(1.4, LANE_GAP_M * 0.45),
+                MARKING_SURFACE_Y + 0.012,
+                materials.marking,
+            );
+            dashes.forEach((dash, dashIndex) => {
+                dash.name = `${hub.id} approach ${approachIndex + 1} lane guide ${laneIndex}.${dashIndex + 1}`;
+                dash.renderOrder = 4;
+                dash.userData = {
+                    junctionId: hub.id,
+                    roadId: approach.roadId,
+                    selectable: true,
+                    kind: 'junction',
+                    roadIds: hub.roadIds,
+                };
+                objects.push(dash);
+            });
+        }
+    });
+    return objects;
+}
+
+function getJunctionApproachShape(approach, radius) {
+    const direction = normalizeDirection(approach.direction || { x: Math.cos(approach.angleRad), z: Math.sin(approach.angleRad) });
+    const widthM = Math.max(1, Number(approach.widthM) || 0);
+    return {
+        direction,
+        normal: { x: -direction.z, z: direction.x },
+        length: Math.max(radius, widthM * 0.95 + 8),
+        halfWidth: Math.max(3.4, widthM * 0.5 + 1.4),
+    };
+}
+
+function getJunctionSidewalkWidth(hub) {
+    const widths = hub.approaches
+        .map((approach) => Math.max(0, Number(approach.sidewalkWidthM) || 0))
+        .filter((width) => width > 0);
+    return widths.length ? Math.max(...widths) : 0;
+}
+
+function normalizeDirection(direction) {
+    const length = Math.hypot(direction.x, direction.z) || 1;
+    return {
+        x: direction.x / length,
+        z: direction.z / length,
+    };
 }
 
 function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enabled) {
