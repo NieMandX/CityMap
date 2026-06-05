@@ -42,6 +42,7 @@ export type JunctionApproach = {
 
 export type JunctionHub = {
     id: string;
+    source: 'road-crossing' | 'roundabout';
     center: Point2D;
     radiusM: number;
     roadIds: string[];
@@ -132,6 +133,7 @@ function buildRoundaboutHub(
 
     return {
         id: `roundabout-${roundabout.id || index + 1}`,
+        source: 'roundabout',
         center: { ...roundabout.center },
         radiusM: Math.max(outerR, 8),
         roadIds: [...new Set(approaches.map((approach) => approach.roadId))],
@@ -280,6 +282,7 @@ function buildJunctionHub(
 
     return {
         id: `junction-${index + 1}`,
+        source: 'road-crossing',
         center: cluster.center,
         radiusM,
         roadIds,

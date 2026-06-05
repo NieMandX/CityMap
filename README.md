@@ -14,6 +14,7 @@ CityMap is an early RoadBLD-like web prototype for drawing road splines in one 3
 - Editable control points, road width, lane count, lane width, and sidewalk settings.
 - Procedural asphalt, curbs, sidewalks, lane markings, and a simple roundabout generator.
 - Debug junction hub detection for road-road intersections and roundabout approaches.
+- Junction-aware road rendering trims generated road meshes around detected hubs.
 - Demo satellite/scheme/mask underlays, image upload, and optional Yandex Static API underlay hook.
 - JSON project export and GLB model export.
 

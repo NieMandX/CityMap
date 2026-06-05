@@ -8,8 +8,10 @@ import {
     nearestPointOnSegment,
     normalizeRoadPoints,
     offsetPolyline,
+    polylineLength,
     sampleRoadAxis,
     sampleRoadSegment,
+    splitPolylineOutsideDiscs,
 } from './core/geometry';
 import { analyzeRoadTopology } from './core/topology';
 import {
@@ -603,6 +605,8 @@ function rebuildScene() {
         generated.forEach((obj) => roadGroup.add(obj));
     });
 
+    createJunctionObjects(state.topology).forEach((obj) => roadGroup.add(obj));
+
     state.roads.forEach((road) => {
         const generated = createRoadObjects(road);
         generated.forEach((obj) => roadGroup.add(obj));
@@ -620,15 +624,26 @@ function createRoadObjects(road) {
     if (!road.built || !road.builtAxisPoints || road.builtAxisPoints.length < 2) return objects;
 
     const axisPoints = road.builtAxisPoints;
+    const renderSegments = getRoadRenderSegments(road, axisPoints);
+    renderSegments.forEach((segment, index) => {
+        objects.push(...createRoadSegmentObjects(road, segment, index, renderSegments.length));
+    });
+
+    return objects;
+}
+
+function createRoadSegmentObjects(road, axisPoints, segmentIndex, segmentCount) {
+    const objects = [];
     const isSelected = state.selectedRoadId === road.id;
+    const label = segmentCount > 1 ? `${road.name} segment ${segmentIndex + 1}` : road.name;
 
     const asphalt = buildRibbonVolumeMesh(axisPoints, road.width, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt);
-    asphalt.name = `${road.name} asphalt`;
+    asphalt.name = `${label} asphalt`;
     asphalt.userData = { roadId: road.id, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, asphalt);
 
-    objects.push(...createRoadSideObjects(axisPoints, road, 1, 'left', road.sidewalkLeft));
-    objects.push(...createRoadSideObjects(axisPoints, road, -1, 'right', road.sidewalkRight));
+    objects.push(...createRoadSideObjects(axisPoints, road, label, 1, 'left', road.sidewalkLeft));
+    objects.push(...createRoadSideObjects(axisPoints, road, label, -1, 'right', road.sidewalkRight));
 
     const edgeLeft = buildRibbonMesh(
         offsetPolyline(axisPoints, road.width / 2 - EDGE_MARKING_INSET_M),
@@ -642,20 +657,61 @@ function createRoadObjects(road) {
         MARKING_SURFACE_Y,
         materials.marking,
     );
-    edgeLeft.name = `${road.name} left edge line`;
-    edgeRight.name = `${road.name} right edge line`;
+    edgeLeft.name = `${label} left edge line`;
+    edgeRight.name = `${label} right edge line`;
     objects.push(edgeLeft, edgeRight);
 
-    objects.push(...createRoadLaneMarkings(axisPoints, road));
+    objects.push(...createRoadLaneMarkings(axisPoints, road, label));
 
     const centerLine = buildLine(axisPoints, isSelected ? 0x2d8cff : 0x60717e, 1.16);
-    centerLine.name = `${road.name} centerline`;
+    centerLine.name = `${label} centerline`;
     objects.push(centerLine);
 
     return objects;
 }
 
-function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
+function getRoadRenderSegments(road, axisPoints) {
+    const clips = (state.topology?.hubs || [])
+        .filter((hub) => hub.kind === 'junction' && hub.roadIds.includes(road.id))
+        .map((hub) => ({
+            center: hub.center,
+            radiusM: Math.max(0, Number(hub.radiusM) || 0),
+        }));
+    if (clips.length === 0) return [axisPoints];
+    return splitPolylineOutsideDiscs(axisPoints, clips)
+        .filter((segment) => segment.length >= 2 && polylineLength(segment) > 0.75);
+}
+
+function createJunctionObjects(topology) {
+    const objects = [];
+    if (!topology?.hubs?.length) return objects;
+
+    topology.hubs
+        .filter((hub) => hub.kind === 'junction' && hub.source === 'road-crossing')
+        .forEach((hub) => {
+            const radius = Math.max(8, Number(hub.radiusM) || 0);
+            const surface = buildDiscVolumeMesh(
+                hub.center,
+                radius,
+                ROAD_SURFACE_Y + 0.006,
+                ROAD_BASE_Y,
+                materials.asphalt,
+                96,
+            );
+            surface.name = `${hub.id} asphalt surface`;
+            surface.userData = {
+                junctionId: hub.id,
+                selectable: true,
+                kind: 'junction',
+                roadIds: hub.roadIds,
+            };
+            addGeneratedMesh(objects, surface);
+        });
+
+    return objects;
+}
+
+function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enabled) {
     const objects = [];
     const sidewalkWidth = Math.max(0, Number(road.sidewalkWidth) || 0);
     const roadEdge = road.width / 2;
@@ -666,7 +722,7 @@ function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
         CURB_BASE_Y,
         materials.curb,
     );
-    innerCurb.name = `${road.name} ${sideName} inner curb`;
+    innerCurb.name = `${label} ${sideName} inner curb`;
     innerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, innerCurb);
 
@@ -679,7 +735,7 @@ function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
         SIDEWALK_BASE_Y,
         materials.sidewalk,
     );
-    sidewalk.name = `${road.name} ${sideName} sidewalk`;
+    sidewalk.name = `${label} ${sideName} sidewalk`;
     sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, sidewalk);
 
@@ -690,7 +746,7 @@ function createRoadSideObjects(axisPoints, road, sideSign, sideName, enabled) {
         CURB_BASE_Y,
         materials.curb,
     );
-    outerCurb.name = `${road.name} ${sideName} outer curb`;
+    outerCurb.name = `${label} ${sideName} outer curb`;
     outerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, outerCurb);
 
@@ -709,7 +765,7 @@ function addGeneratedMesh(objects, mesh) {
     }
 }
 
-function createRoadLaneMarkings(axisPoints, road) {
+function createRoadLaneMarkings(axisPoints, road, label = road.name) {
     const objects = [];
     const laneCount = Math.max(1, Math.round(road.lanes || 1));
     if (laneCount <= 1) return objects;
@@ -729,7 +785,7 @@ function createRoadLaneMarkings(axisPoints, road) {
             materials.marking,
         );
         dashes.forEach((dash, index) => {
-            dash.name = `${road.name} lane dash ${i}.${index + 1}`;
+            dash.name = `${label} lane dash ${i}.${index + 1}`;
             dash.userData = { roadId: road.id, selectable: true, kind: 'road' };
             objects.push(dash);
         });

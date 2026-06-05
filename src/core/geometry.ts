@@ -12,6 +12,11 @@ export type RoadAxisSource = {
     points: Point2D[];
 };
 
+export type ClipDisc = {
+    center: Point2D;
+    radiusM: number;
+};
+
 export function normalizeRoadPoints(points: Point2D[] = []) {
     return points.map((point, index, list) => ({
         x: Number(point.x) || 0,
@@ -132,6 +137,54 @@ export function samplePolylineRange(points: Point2D[], startM: number, endM: num
     return out;
 }
 
+export function splitPolylineOutsideDiscs(points: Point2D[], discs: ClipDisc[] = []) {
+    if (!Array.isArray(points) || points.length < 2) return [];
+    const clips = discs
+        .map((disc) => ({
+            center: disc.center,
+            radiusM: Math.max(0, Number(disc.radiusM) || 0),
+        }))
+        .filter((disc) => disc.radiusM > EPS);
+    if (clips.length === 0) return [points.map((point) => ({ ...point }))];
+
+    const segments: Point2D[][] = [];
+    let current: Point2D[] = [];
+
+    for (let i = 1; i < points.length; i += 1) {
+        const a = points[i - 1];
+        const b = points[i];
+        if (distance2(a, b) <= EPS) continue;
+
+        const outsideRanges = subtractInsideDiscRanges(clips, a, b);
+        outsideRanges.forEach(([startT, endT]) => {
+            if (endT - startT <= EPS) return;
+            const start = interpolatePoint(a, b, startT);
+            const end = interpolatePoint(a, b, endT);
+
+            if (current.length === 0) {
+                current.push(start);
+            } else if (distance2(current[current.length - 1], start) > EPS) {
+                pushFinishedPolyline(segments, current);
+                current = [start];
+            }
+            current.push(end);
+
+            if (endT < 1 - EPS) {
+                pushFinishedPolyline(segments, current);
+                current = [];
+            }
+        });
+
+        if (outsideRanges.length === 0) {
+            pushFinishedPolyline(segments, current);
+            current = [];
+        }
+    }
+
+    pushFinishedPolyline(segments, current);
+    return segments;
+}
+
 export function pointAtDistance(points: Point2D[], targetM: number) {
     let traveled = 0;
     for (let i = 1; i < points.length; i += 1) {
@@ -179,4 +232,75 @@ function lerp(a: number, b: number, t: number) {
 
 function clamp(value: number, min: number, max: number) {
     return Math.min(max, Math.max(min, value));
+}
+
+function subtractInsideDiscRanges(discs: ClipDisc[], a: Point2D, b: Point2D) {
+    const insideRanges = discs
+        .flatMap((disc) => segmentDiscRange(a, b, disc))
+        .sort((left, right) => left[0] - right[0]);
+    if (insideRanges.length === 0) return [[0, 1]];
+
+    const merged = [];
+    insideRanges.forEach((range) => {
+        const start = clamp(range[0], 0, 1);
+        const end = clamp(range[1], 0, 1);
+        if (end - start <= EPS) return;
+        const previous = merged[merged.length - 1];
+        if (previous && start <= previous[1] + EPS) {
+            previous[1] = Math.max(previous[1], end);
+            return;
+        }
+        merged.push([start, end]);
+    });
+
+    const outside = [];
+    let cursor = 0;
+    merged.forEach(([start, end]) => {
+        if (start > cursor + EPS) outside.push([cursor, start]);
+        cursor = Math.max(cursor, end);
+    });
+    if (cursor < 1 - EPS) outside.push([cursor, 1]);
+    return outside;
+}
+
+function segmentDiscRange(a: Point2D, b: Point2D, disc: ClipDisc) {
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const fx = a.x - disc.center.x;
+    const fz = a.z - disc.center.z;
+    const aa = dx * dx + dz * dz;
+    const bb = 2 * (fx * dx + fz * dz);
+    const cc = fx * fx + fz * fz - disc.radiusM * disc.radiusM;
+
+    if (aa <= EPS) return [];
+    const discriminant = bb * bb - 4 * aa * cc;
+    const aInside = cc <= EPS;
+    const bInside = distance2(b, disc.center) <= disc.radiusM + EPS;
+
+    if (discriminant < -EPS) return aInside && bInside ? [[0, 1]] : [];
+
+    const sqrt = Math.sqrt(Math.max(0, discriminant));
+    const t1 = (-bb - sqrt) / (2 * aa);
+    const t2 = (-bb + sqrt) / (2 * aa);
+    const start = clamp(Math.min(t1, t2), 0, 1);
+    const end = clamp(Math.max(t1, t2), 0, 1);
+
+    if (aInside && bInside) return [[0, 1]];
+    if (aInside) return [[0, end]];
+    if (bInside) return [[start, 1]];
+    if (end <= 0 || start >= 1 || end - start <= EPS) return [];
+    return [[start, end]];
+}
+
+function interpolatePoint(a: Point2D, b: Point2D, t: number) {
+    return {
+        x: lerp(a.x, b.x, clamp(t, 0, 1)),
+        z: lerp(a.z, b.z, clamp(t, 0, 1)),
+    };
+}
+
+function pushFinishedPolyline(segments: Point2D[][], points: Point2D[]) {
+    if (points.length < 2) return;
+    if (polylineLength(points) <= EPS) return;
+    segments.push(points);
 }
