@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 
@@ -39,6 +39,9 @@ const state = {
     underlayMode: 'satellite',
     showWireframe: true,
     showNormals: false,
+    rendererBackend: 'pending',
+    rendererForcedWebGL: false,
+    rendererFallbackReason: '',
     roadSeq: 3,
     roundaboutSeq: 2,
     profiles: [
@@ -140,18 +143,26 @@ let helperGroup;
 let exportGroup;
 let resizeObserver;
 
-init();
+init().catch((error) => {
+    console.error('CityMap failed to initialize.', error);
+    if (!dom.statusText) collectDom();
+    setStatus('Renderer initialization failed. Check console for details.');
+    if (dom.rendererState) {
+        dom.rendererState.textContent = 'Renderer failed';
+        dom.rendererState.title = error?.message || 'Renderer initialization failed';
+    }
+});
 
-function init() {
+async function init() {
     collectDom();
     normalizeProjectState();
-    initThree();
+    await initThree();
     initMaterials();
     bindUi();
     applyUnderlayMode('satellite');
     rebuildScene();
     setPerspectiveView();
-    animate();
+    startRenderLoop();
     setStatus('Ready. Draw mode adds spline points on the ground plane.');
 }
 
@@ -205,27 +216,20 @@ function collectDom() {
         roundaboutWidthInput: document.getElementById('roundaboutWidthInput'),
         roundaboutLanesInput: document.getElementById('roundaboutLanesInput'),
         statusText: document.getElementById('statusText'),
+        rendererState: document.getElementById('rendererState'),
         coordText: document.getElementById('coordText'),
         objectCount: document.getElementById('objectCount'),
         selectionState: document.getElementById('selectionState'),
     });
 }
 
-function initThree() {
+async function initThree() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x101316);
     camera = new THREE.PerspectiveCamera(48, 1, 0.1, 5000);
 
-    renderer = new THREE.WebGLRenderer({
-        canvas: dom.canvas,
-        antialias: true,
-        alpha: false,
-        preserveDrawingBuffer: false,
-    });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1;
+    renderer = await createRenderer();
+    syncRendererState();
 
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -266,6 +270,68 @@ function initThree() {
     dom.canvas.addEventListener('pointerleave', onPointerUp);
     dom.canvas.addEventListener('dblclick', onDoubleClick);
     window.addEventListener('keydown', onKeyDown);
+}
+
+async function createRenderer() {
+    const params = new URLSearchParams(window.location.search);
+    const forceWebGL = params.get('renderer') === 'webgl' || params.get('forceWebGL') === '1';
+    state.rendererForcedWebGL = forceWebGL;
+
+    try {
+        const webgpuRenderer = new THREE.WebGPURenderer({
+            canvas: dom.canvas,
+            antialias: true,
+            alpha: false,
+            forceWebGL,
+        });
+        configureRenderer(webgpuRenderer);
+        if (typeof webgpuRenderer.init === 'function') {
+            await webgpuRenderer.init();
+        }
+        state.rendererBackend = getRendererBackendName(webgpuRenderer);
+        state.rendererFallbackReason = forceWebGL ? 'Forced with ?renderer=webgl.' : '';
+        return webgpuRenderer;
+    } catch (error) {
+        console.warn('WebGPURenderer initialization failed. Falling back to WebGL2 backend.', error);
+        const webglRenderer = new THREE.WebGPURenderer({
+            canvas: dom.canvas,
+            antialias: true,
+            alpha: false,
+            forceWebGL: true,
+        });
+        configureRenderer(webglRenderer);
+        if (typeof webglRenderer.init === 'function') {
+            await webglRenderer.init();
+        }
+        state.rendererBackend = 'WebGL2';
+        state.rendererFallbackReason = error?.message || 'WebGPURenderer initialization failed.';
+        return webglRenderer;
+    }
+}
+
+function configureRenderer(rendererInstance) {
+    rendererInstance.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    rendererInstance.outputColorSpace = THREE.SRGBColorSpace;
+    rendererInstance.toneMapping = THREE.ACESFilmicToneMapping;
+    rendererInstance.toneMappingExposure = 1;
+}
+
+function getRendererBackendName(rendererInstance) {
+    if (rendererInstance.backend?.isWebGPUBackend) return 'WebGPU';
+    if (rendererInstance.backend?.isWebGLBackend) return 'WebGL2';
+    if (rendererInstance.isWebGLRenderer) return 'WebGL2';
+    if (rendererInstance.isWebGPURenderer) return 'WebGPU renderer';
+    return 'GPU';
+}
+
+function syncRendererState() {
+    if (!dom.rendererState) return;
+    const forced = state.rendererForcedWebGL ? ' forced' : '';
+    dom.rendererState.textContent = `${state.rendererBackend}${forced}`;
+    dom.rendererState.title = state.rendererFallbackReason
+        ? `Renderer: ${state.rendererBackend}. ${state.rendererFallbackReason}`
+        : `Renderer: ${state.rendererBackend}`;
+    dom.editor.dataset.renderer = state.rendererBackend.toLowerCase().replaceAll(' ', '-');
 }
 
 function initMaterials() {
@@ -486,8 +552,11 @@ function resizeRenderer() {
     camera.updateProjectionMatrix();
 }
 
-function animate() {
-    requestAnimationFrame(animate);
+function startRenderLoop() {
+    renderer.setAnimationLoop(renderFrame);
+}
+
+function renderFrame() {
     controls.update();
     renderer.render(scene, camera);
 }

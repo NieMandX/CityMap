@@ -4,11 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CityMap editor</title>
-    <link rel="stylesheet" href="./styles/road-editor.css?v=curb-normals-20260604">
+    <link rel="stylesheet" href="./styles/road-editor.css?v=webgpu-renderer-20260605">
     <script type="importmap">
         {
             "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+                "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+                "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+                "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
             }
         }
@@ -248,10 +250,11 @@
 
         <footer class="status-bar">
             <span id="statusText">Select a point or switch to Draw and click the ground plane.</span>
+            <span class="renderer-state" id="rendererState">GPU pending</span>
             <span id="coordText">54.750676 N, 55.996645 E</span>
         </footer>
     </div>
 
-    <script type="module" src="./scripts/road-editor.js?v=curb-normals-20260604"></script>
+    <script type="module" src="./scripts/road-editor.js?v=webgpu-renderer-20260605"></script>
 </body>
 </html>
