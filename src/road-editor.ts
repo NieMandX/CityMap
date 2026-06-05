@@ -76,6 +76,10 @@ const state: Record<string, any> = {
     topology: { hubs: [], junctionCount: 0, connectionCount: 0 },
     topologyDirty: false,
     clipRoadsForCurrentRebuild: true,
+    renderTopologyForCurrentRebuild: null,
+    unclippedRoadIdsForCurrentRebuild: new Set(),
+    dragRebuildFrame: null,
+    pendingDragRoadId: null,
     rendererBackend: 'pending',
     rendererForcedWebGL: false,
     rendererFallbackReason: '',
@@ -652,6 +656,16 @@ function rebuildScene(options: Record<string, any> = {}) {
     const includeTopologyObjects = options.includeTopologyObjects !== false;
     const clipRoads = options.clipRoads !== false;
     const changedRoadIds = Array.isArray(options.changedRoadIds) ? options.changedRoadIds.filter(Boolean) : [];
+    const excludedTopologyRoadIds = new Set(Array.isArray(options.excludeTopologyRoadIds) ? options.excludeTopologyRoadIds.filter(Boolean) : []);
+    const unclippedRoadIds = new Set(Array.isArray(options.unclippedRoadIds) ? options.unclippedRoadIds.filter(Boolean) : []);
+    const preserveUnrelatedTopologyObjects = options.preserveUnrelatedTopologyObjects === true && excludedTopologyRoadIds.size > 0;
+    const syncUi = options.syncUi !== false;
+    const preservedRoadTopologyObjects = preserveUnrelatedTopologyObjects
+        ? detachPreservedTopologyObjects(roadGroup, excludedTopologyRoadIds)
+        : [];
+    const preservedHelperTopologyObjects = preserveUnrelatedTopologyObjects
+        ? detachPreservedTopologyObjects(helperGroup, excludedTopologyRoadIds)
+        : [];
 
     clearGroup(roadGroup);
     clearGroup(helperGroup);
@@ -668,15 +682,20 @@ function rebuildScene(options: Record<string, any> = {}) {
     } else {
         state.topologyDirty = true;
     }
+    const renderTopology = filterTopologyForRender(state.topology, excludedTopologyRoadIds);
     state.clipRoadsForCurrentRebuild = clipRoads;
+    state.renderTopologyForCurrentRebuild = renderTopology;
+    state.unclippedRoadIdsForCurrentRebuild = unclippedRoadIds;
 
     state.roundabouts.forEach((roundabout) => {
         const generated = createRoundaboutObjects(roundabout);
         generated.forEach((obj) => roadGroup.add(obj));
     });
 
-    if (includeTopologyObjects) {
-        createJunctionObjects(state.topology).forEach((obj) => roadGroup.add(obj));
+    if (preserveUnrelatedTopologyObjects) {
+        preservedRoadTopologyObjects.forEach((obj) => roadGroup.add(obj));
+    } else if (includeTopologyObjects) {
+        createJunctionObjects(renderTopology).forEach((obj) => roadGroup.add(obj));
     }
 
     state.roads.forEach((road) => {
@@ -685,20 +704,31 @@ function rebuildScene(options: Record<string, any> = {}) {
         createRoadHelpers(road).forEach((obj) => helperGroup.add(obj));
     });
     state.clipRoadsForCurrentRebuild = true;
-    if (includeTopologyObjects) {
-        createTopologyHelpers(state.topology).forEach((obj) => helperGroup.add(obj));
+    state.renderTopologyForCurrentRebuild = null;
+    state.unclippedRoadIdsForCurrentRebuild = new Set();
+    if (preserveUnrelatedTopologyObjects) {
+        preservedHelperTopologyObjects.forEach((obj) => helperGroup.add(obj));
+    } else if (includeTopologyObjects) {
+        createTopologyHelpers(renderTopology).forEach((obj) => helperGroup.add(obj));
     }
 
     roadGroup.updateMatrixWorld(true);
-    syncInspector();
-    syncStats();
+    if (syncUi) {
+        syncInspector();
+        syncStats();
+    }
 }
 
-function rebuildSceneForDrag() {
+function rebuildSceneForDrag(changedRoadId = null) {
+    const changedRoadIds = changedRoadId ? [changedRoadId] : [];
     rebuildScene({
         refreshTopology: false,
-        includeTopologyObjects: false,
-        clipRoads: false,
+        includeTopologyObjects: changedRoadIds.length > 0,
+        clipRoads: true,
+        excludeTopologyRoadIds: changedRoadIds,
+        unclippedRoadIds: changedRoadIds,
+        preserveUnrelatedTopologyObjects: changedRoadIds.length > 0,
+        syncUi: false,
     });
 }
 
@@ -706,6 +736,60 @@ function rebuildSceneForChangedRoad(roadId) {
     rebuildScene({
         changedRoadIds: roadId ? [roadId] : [],
     });
+}
+
+function scheduleRebuildSceneForDrag(changedRoadId = null) {
+    if (changedRoadId) state.pendingDragRoadId = changedRoadId;
+    if (state.dragRebuildFrame !== null) return;
+    state.dragRebuildFrame = requestAnimationFrame(() => {
+        const roadId = state.pendingDragRoadId;
+        state.dragRebuildFrame = null;
+        state.pendingDragRoadId = null;
+        rebuildSceneForDrag(roadId);
+    });
+}
+
+function cancelScheduledDragRebuild() {
+    if (state.dragRebuildFrame === null) return;
+    cancelAnimationFrame(state.dragRebuildFrame);
+    state.dragRebuildFrame = null;
+    state.pendingDragRoadId = null;
+}
+
+function filterTopologyForRender(topology, excludedRoadIds) {
+    if (!excludedRoadIds?.size || !topology?.hubs?.length) return topology;
+    const hubs = topology.hubs.filter((hub) => !hub.roadIds?.some((roadId) => excludedRoadIds.has(roadId)));
+    return {
+        hubs,
+        junctionCount: hubs.filter((hub) => hub.kind === 'junction').length,
+        connectionCount: hubs.filter((hub) => hub.kind === 'connection').length,
+    };
+}
+
+function detachPreservedTopologyObjects(group, excludedRoadIds) {
+    const preserved = [];
+    for (let index = group.children.length - 1; index >= 0; index -= 1) {
+        const child = group.children[index];
+        if (!isUnaffectedTopologyObject(child, excludedRoadIds)) continue;
+        group.remove(child);
+        preserved.push(child);
+    }
+    return preserved;
+}
+
+function isUnaffectedTopologyObject(obj, excludedRoadIds) {
+    const data = obj?.userData || {};
+    const kind = data.kind;
+    const isTopologyObject = kind === 'junction'
+        || kind === 'junction-hub'
+        || kind === 'junction-center'
+        || kind === 'junction-approach';
+    if (!isTopologyObject) return false;
+    const roadIds = Array.isArray(data.roadIds)
+        ? data.roadIds
+        : (data.roadId ? [data.roadId] : []);
+    if (roadIds.length === 0) return false;
+    return roadIds.every((roadId) => !excludedRoadIds.has(roadId));
 }
 
 function createRoadObjects(road) {
@@ -760,8 +844,10 @@ function createRoadSegmentObjects(road, axisPoints, segmentIndex, segmentCount) 
 }
 
 function getRoadRenderSegments(road, axisPoints) {
+    if (state.unclippedRoadIdsForCurrentRebuild?.has?.(road.id)) return [axisPoints];
     if (!state.clipRoadsForCurrentRebuild) return [axisPoints];
-    const clips = (state.topology?.hubs || [])
+    const topology = state.renderTopologyForCurrentRebuild || state.topology;
+    const clips = (topology?.hubs || [])
         .filter((hub) => hub.kind === 'junction' && hub.roadIds.includes(road.id))
         .map((hub) => ({
             center: hub.center,
@@ -1308,6 +1394,7 @@ function createTopologyHelpers(topology) {
                 exportable: false,
                 kind: 'junction-center',
                 junctionId: hub.id,
+                roadIds: hub.roadIds,
             };
             objects.push(core);
 
@@ -1501,7 +1588,7 @@ function onPointerMove(event) {
         point.x = ground.x;
         point.z = ground.z;
         rebuildGeneratedRoadAfterGeometryChange(road);
-        rebuildSceneForDrag();
+        scheduleRebuildSceneForDrag(road.id);
         return;
     }
     if (state.drag.type === 'road') {
@@ -1515,7 +1602,7 @@ function onPointerMove(event) {
             z: point.z + dz,
         }));
         rebuildGeneratedRoadAfterGeometryChange(road);
-        rebuildSceneForDrag();
+        scheduleRebuildSceneForDrag(road.id);
         return;
     }
     if (state.drag.type === 'roundabout') {
@@ -1525,16 +1612,17 @@ function onPointerMove(event) {
             x: state.drag.originalCenter.x + ground.x - state.drag.start.x,
             z: state.drag.originalCenter.z + ground.z - state.drag.start.z,
         };
-        rebuildSceneForDrag();
+        scheduleRebuildSceneForDrag();
         return;
     }
-    rebuildSceneForDrag();
+    scheduleRebuildSceneForDrag();
 }
 
 function onPointerUp() {
     if (state.drag) {
         const dragType = state.drag.type;
         const changedRoadId = dragType === 'point' || dragType === 'road' ? state.drag.roadId : null;
+        cancelScheduledDragRebuild();
         state.drag = null;
         controls.enabled = true;
         if (changedRoadId) {
