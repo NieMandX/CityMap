@@ -74,6 +74,8 @@ const state: Record<string, any> = {
     showNormals: false,
     showTopology: true,
     topology: { hubs: [], junctionCount: 0, connectionCount: 0 },
+    topologyDirty: false,
+    clipRoadsForCurrentRebuild: true,
     rendererBackend: 'pending',
     rendererForcedWebGL: false,
     rendererFallbackReason: '',
@@ -645,33 +647,56 @@ function renderFrame() {
     renderer.render(scene, camera);
 }
 
-function rebuildScene() {
+function rebuildScene(options: Record<string, any> = {}) {
+    const refreshTopology = options.refreshTopology !== false;
+    const includeTopologyObjects = options.includeTopologyObjects !== false;
+    const clipRoads = options.clipRoads !== false;
+
     clearGroup(roadGroup);
     clearGroup(helperGroup);
     clearGroup(exportGroup);
-    state.topology = analyzeRoadTopology(state.roads, {
-        mergeRadiusM: 18,
-        endpointSnapRadiusM: 10,
-        roundabouts: state.roundabouts,
-    });
+    if (refreshTopology) {
+        state.topology = analyzeRoadTopology(state.roads, {
+            mergeRadiusM: 18,
+            endpointSnapRadiusM: 10,
+            roundabouts: state.roundabouts,
+        });
+        state.topologyDirty = false;
+    } else {
+        state.topologyDirty = true;
+    }
+    state.clipRoadsForCurrentRebuild = clipRoads;
 
     state.roundabouts.forEach((roundabout) => {
         const generated = createRoundaboutObjects(roundabout);
         generated.forEach((obj) => roadGroup.add(obj));
     });
 
-    createJunctionObjects(state.topology).forEach((obj) => roadGroup.add(obj));
+    if (includeTopologyObjects) {
+        createJunctionObjects(state.topology).forEach((obj) => roadGroup.add(obj));
+    }
 
     state.roads.forEach((road) => {
         const generated = createRoadObjects(road);
         generated.forEach((obj) => roadGroup.add(obj));
         createRoadHelpers(road).forEach((obj) => helperGroup.add(obj));
     });
-    createTopologyHelpers(state.topology).forEach((obj) => helperGroup.add(obj));
+    state.clipRoadsForCurrentRebuild = true;
+    if (includeTopologyObjects) {
+        createTopologyHelpers(state.topology).forEach((obj) => helperGroup.add(obj));
+    }
 
     roadGroup.updateMatrixWorld(true);
     syncInspector();
     syncStats();
+}
+
+function rebuildSceneForDrag() {
+    rebuildScene({
+        refreshTopology: false,
+        includeTopologyObjects: false,
+        clipRoads: false,
+    });
 }
 
 function createRoadObjects(road) {
@@ -726,6 +751,7 @@ function createRoadSegmentObjects(road, axisPoints, segmentIndex, segmentCount) 
 }
 
 function getRoadRenderSegments(road, axisPoints) {
+    if (!state.clipRoadsForCurrentRebuild) return [axisPoints];
     const clips = (state.topology?.hubs || [])
         .filter((hub) => hub.kind === 'junction' && hub.roadIds.includes(road.id))
         .map((hub) => ({
@@ -1466,7 +1492,7 @@ function onPointerMove(event) {
         point.x = ground.x;
         point.z = ground.z;
         rebuildGeneratedRoadAfterGeometryChange(road);
-        rebuildScene();
+        rebuildSceneForDrag();
         return;
     }
     if (state.drag.type === 'road') {
@@ -1480,7 +1506,7 @@ function onPointerMove(event) {
             z: point.z + dz,
         }));
         rebuildGeneratedRoadAfterGeometryChange(road);
-        rebuildScene();
+        rebuildSceneForDrag();
         return;
     }
     if (state.drag.type === 'roundabout') {
@@ -1490,10 +1516,10 @@ function onPointerMove(event) {
             x: state.drag.originalCenter.x + ground.x - state.drag.start.x,
             z: state.drag.originalCenter.z + ground.z - state.drag.start.z,
         };
-        rebuildScene();
+        rebuildSceneForDrag();
         return;
     }
-    rebuildScene();
+    rebuildSceneForDrag();
 }
 
 function onPointerUp() {
@@ -1501,6 +1527,7 @@ function onPointerUp() {
         const dragType = state.drag.type;
         state.drag = null;
         controls.enabled = true;
+        rebuildScene();
         if (dragType === 'point') setStatus('Node updated. 3D road geometry is in sync.');
         if (dragType === 'road') setStatus('Road moved.');
         if (dragType === 'roundabout') setStatus('Roundabout moved.');
