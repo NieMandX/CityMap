@@ -34,6 +34,8 @@ import {
 
 const DEFAULT_CENTER = { lat: 54.750676, lon: 55.996645 };
 const DEFAULT_SIZE_M = 600;
+const DEFAULT_ROAD_WIDTH_M = 10;
+const DEFAULT_SIDEWALK_WIDTH_M = 2;
 const ROAD_BASE_Y = 0;
 const ROAD_SURFACE_Y = 0.18;
 const SIDEWALK_BASE_Y = 0;
@@ -552,9 +554,11 @@ function bindUi() {
         dom.laneWidthInput,
         dom.trafficDirectionInput,
         dom.sidewalkWidthInput,
+    ].forEach((input) => input.addEventListener('input', updateSelectedRoadFromInspector));
+    [
         dom.sidewalkLeftInput,
         dom.sidewalkRightInput,
-    ].forEach((input) => input.addEventListener('input', updateSelectedRoadFromInspector));
+    ].forEach((input) => input.addEventListener('change', updateSelectedRoadFromInspector));
 
     dom.pointSelectInput.addEventListener('change', updateSelectedPointSelectionFromInspector);
     dom.pointSmoothInput.addEventListener('change', updateSelectedPointFromInspector);
@@ -1582,7 +1586,7 @@ function createDefaultRoad(point) {
     const selected = getSelectedRoad();
     const laneWidth = selected?.laneWidth || DEFAULT_LANE_WIDTH_M;
     const trafficDirection = normalizeTrafficDirection(selected?.trafficDirection);
-    const width = selected?.width || 10;
+    const width = selected?.width || DEFAULT_ROAD_WIDTH_M;
     const laneLayout = calculateRoadLaneLayout(width, laneWidth, trafficDirection);
     return {
         id: `road-${state.roadSeq}`,
@@ -1593,9 +1597,9 @@ function createDefaultRoad(point) {
         lanes: laneLayout.totalLanes,
         laneWidth,
         trafficDirection,
-        sidewalkWidth: selected?.sidewalkWidth || 2,
-        sidewalkLeft: selected?.sidewalkLeft ?? true,
-        sidewalkRight: selected?.sidewalkRight ?? true,
+        sidewalkWidth: DEFAULT_SIDEWALK_WIDTH_M,
+        sidewalkLeft: true,
+        sidewalkRight: true,
         built: false,
         buildDirty: true,
         builtAxisPoints: [],
