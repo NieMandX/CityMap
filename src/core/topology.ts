@@ -34,6 +34,7 @@ export type JunctionApproach = {
     roadId: string;
     roadName: string;
     side: 'start' | 'end' | 'backward' | 'forward';
+    widthM: number;
     angleRad: number;
     distanceM: number;
     nearestPoint: Point2D;
@@ -295,31 +296,33 @@ function buildJunctionHub(
 function buildRoadApproaches(sample: SampledRoad, center: Point2D, endpointSnapRadiusM: number): JunctionApproach[] {
     const nearest = nearestOnSampledRoad(sample, center);
     const roadName = sample.road.name || sample.road.id;
+    const widthM = Math.max(1, Number(sample.road.width) || 0);
     const lookahead = Math.max(8, Math.min(22, sample.totalM * 0.2));
 
     if (nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
-        return [makeApproach(sample.road.id, roadName, 'start', nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'start', widthM, nearest, directionBetween(nearest.point, target))];
     }
 
     if (sample.totalM - nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
-        return [makeApproach(sample.road.id, roadName, 'end', nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'end', widthM, nearest, directionBetween(nearest.point, target))];
     }
 
     const backwardTarget = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
     const forwardTarget = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
     return [
-        makeApproach(sample.road.id, roadName, 'backward', nearest, directionBetween(nearest.point, backwardTarget)),
-        makeApproach(sample.road.id, roadName, 'forward', nearest, directionBetween(nearest.point, forwardTarget)),
+        makeApproach(sample.road.id, roadName, 'backward', widthM, nearest, directionBetween(nearest.point, backwardTarget)),
+        makeApproach(sample.road.id, roadName, 'forward', widthM, nearest, directionBetween(nearest.point, forwardTarget)),
     ];
 }
 
-function makeApproach(roadId: string, roadName: string, side: JunctionApproach['side'], nearest, direction: Point2D): JunctionApproach {
+function makeApproach(roadId: string, roadName: string, side: JunctionApproach['side'], widthM: number, nearest, direction: Point2D): JunctionApproach {
     return {
         roadId,
         roadName,
         side,
+        widthM,
         angleRad: Math.atan2(direction.z, direction.x),
         distanceM: nearest.distanceM,
         nearestPoint: nearest.point,

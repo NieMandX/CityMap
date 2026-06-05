@@ -208,6 +208,36 @@ export function distancePointToSegment(point: Point2D, a: Point2D, b: Point2D) {
     return nearestPointOnSegment(point, a, b).distance;
 }
 
+export function convexHull(points: Point2D[] = []) {
+    const sorted = points
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.z))
+        .map((point) => ({ x: point.x, z: point.z }))
+        .sort((a, b) => a.x - b.x || a.z - b.z);
+
+    if (sorted.length <= 1) return sorted;
+
+    const lower = [];
+    sorted.forEach((point) => {
+        while (lower.length >= 2 && crossPoints(lower[lower.length - 2], lower[lower.length - 1], point) <= EPS) {
+            lower.pop();
+        }
+        lower.push(point);
+    });
+
+    const upper = [];
+    for (let i = sorted.length - 1; i >= 0; i -= 1) {
+        const point = sorted[i];
+        while (upper.length >= 2 && crossPoints(upper[upper.length - 2], upper[upper.length - 1], point) <= EPS) {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+
+    lower.pop();
+    upper.pop();
+    return [...lower, ...upper];
+}
+
 export function nearestPointOnSegment(point: Point2D, a: Point2D, b: Point2D) {
     const vx = b.x - a.x;
     const vz = b.z - a.z;
@@ -303,4 +333,8 @@ function pushFinishedPolyline(segments: Point2D[][], points: Point2D[]) {
     if (points.length < 2) return;
     if (polylineLength(points) <= EPS) return;
     segments.push(points);
+}
+
+function crossPoints(origin: Point2D, a: Point2D, b: Point2D) {
+    return (a.x - origin.x) * (b.z - origin.z) - (a.z - origin.z) * (b.x - origin.x);
 }

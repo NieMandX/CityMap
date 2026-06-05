@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import {
+    convexHull,
     distance2,
     distancePointToSegment,
     EPS,
@@ -22,6 +23,7 @@ import {
     buildLine,
     buildMeshNormals,
     buildMeshWireframe,
+    buildPolygonVolumeMesh,
     buildRibbonMesh,
     buildRibbonVolumeMesh,
     buildRingVolumeMesh,
@@ -63,7 +65,7 @@ const state: Record<string, any> = {
     rendererBackend: 'pending',
     rendererForcedWebGL: false,
     rendererFallbackReason: '',
-    roadSeq: 3,
+    roadSeq: 4,
     roundaboutSeq: 2,
     profiles: [
         {
@@ -133,6 +135,24 @@ const state: Record<string, any> = {
             laneWidth: 3.5,
             sidewalkWidth: 1.5,
             sidewalkLeft: false,
+            sidewalkRight: true,
+            built: true,
+            buildDirty: false,
+        },
+        {
+            id: 'road-4',
+            name: 'West connector',
+            profileId: 'urban-asphalt',
+            points: [
+                { x: -226, z: 112, smooth: 'corner' },
+                { x: -191, z: -36, smooth: 'corner' },
+                { x: -156, z: -184, smooth: 'corner' },
+            ],
+            width: 10,
+            lanes: 2,
+            laneWidth: 3.5,
+            sidewalkWidth: 1.5,
+            sidewalkLeft: true,
             sidewalkRight: true,
             built: true,
             buildDirty: false,
@@ -690,14 +710,17 @@ function createJunctionObjects(topology) {
         .filter((hub) => hub.kind === 'junction' && hub.source === 'road-crossing')
         .forEach((hub) => {
             const radius = Math.max(8, Number(hub.radiusM) || 0);
-            const surface = buildDiscVolumeMesh(
-                hub.center,
-                radius,
-                ROAD_SURFACE_Y + 0.006,
-                ROAD_BASE_Y,
-                materials.asphalt,
-                96,
-            );
+            const surfacePoints = createJunctionSurfacePoints(hub);
+            const surface = surfacePoints.length >= 3
+                ? buildPolygonVolumeMesh(surfacePoints, ROAD_SURFACE_Y + 0.006, ROAD_BASE_Y, materials.asphalt)
+                : buildDiscVolumeMesh(
+                    hub.center,
+                    radius,
+                    ROAD_SURFACE_Y + 0.006,
+                    ROAD_BASE_Y,
+                    materials.asphalt,
+                    96,
+                );
             surface.name = `${hub.id} asphalt surface`;
             surface.userData = {
                 junctionId: hub.id,
@@ -709,6 +732,38 @@ function createJunctionObjects(topology) {
         });
 
     return objects;
+}
+
+function createJunctionSurfacePoints(hub) {
+    const radius = Math.max(8, Number(hub.radiusM) || 0);
+    const points = [];
+
+    hub.approaches.forEach((approach) => {
+        const direction = approach.direction || { x: Math.cos(approach.angleRad), z: Math.sin(approach.angleRad) };
+        const length = Math.max(radius, (Number(approach.widthM) || 6) * 0.95 + 8);
+        const halfWidth = Math.max(3.4, (Number(approach.widthM) || 6) * 0.5 + 1.4);
+        const normal = { x: -direction.z, z: direction.x };
+        const shoulder = {
+            x: hub.center.x + direction.x * length,
+            z: hub.center.z + direction.z * length,
+        };
+        points.push(
+            {
+                x: shoulder.x + normal.x * halfWidth,
+                z: shoulder.z + normal.z * halfWidth,
+            },
+            {
+                x: shoulder.x - normal.x * halfWidth,
+                z: shoulder.z - normal.z * halfWidth,
+            },
+            {
+                x: hub.center.x + direction.x * (length + halfWidth * 0.45),
+                z: hub.center.z + direction.z * (length + halfWidth * 0.45),
+            },
+        );
+    });
+
+    return convexHull(points);
 }
 
 function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enabled) {
@@ -804,11 +859,14 @@ function createRoadHelpers(road) {
         const previewMaterial = isSelectedRoad
             ? materials.selectedRoadFootprint
             : (road.built ? materials.roadFootprint : materials.draftRoadFootprint);
-        const footprint = buildRibbonMesh(footprintAxis, road.width + (isSelectedRoad ? 1.2 : 0), 0.24, previewMaterial);
-        footprint.name = `${road.name} generated 3D road footprint`;
-        footprint.userData = { roadId: road.id, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
-        footprint.renderOrder = 2;
-        objects.push(footprint);
+        const footprintSegments = road.built ? getRoadRenderSegments(road, footprintAxis) : [footprintAxis];
+        footprintSegments.forEach((segment, index) => {
+            const footprint = buildRibbonMesh(segment, road.width + (isSelectedRoad ? 1.2 : 0), 0.24, previewMaterial);
+            footprint.name = `${road.name} generated 3D road footprint${footprintSegments.length > 1 ? ` ${index + 1}` : ''}`;
+            footprint.userData = { roadId: road.id, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
+            footprint.renderOrder = 2;
+            objects.push(footprint);
+        });
     }
 
     const showEditControls = isEditingRoad || isActiveDrawRoad;

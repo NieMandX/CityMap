@@ -258,6 +258,50 @@ export function buildDiscVolumeMesh(center: Point2D, radius: number, topY: numbe
     return new THREE.Mesh(geometry, material);
 }
 
+export function buildPolygonVolumeMesh(points: Point2D[], topY: number, baseY: number, material: any) {
+    if (!points || points.length < 3) {
+        return new THREE.Mesh(new THREE.BufferGeometry(), material);
+    }
+
+    const vertices = [];
+    const uvs = [];
+    const indices = [];
+    const center = points.reduce(
+        (acc, point) => ({ x: acc.x + point.x / points.length, z: acc.z + point.z / points.length }),
+        { x: 0, z: 0 },
+    );
+    const topCenter = addGeometryVertex(vertices, uvs, center.x, topY, center.z, 0.5, 0.5);
+    const bottomCenter = addGeometryVertex(vertices, uvs, center.x, baseY, center.z, 0.5, 0.5);
+    const topRing = [];
+    const bottomRing = [];
+    const sideTop = [];
+    const sideBottom = [];
+    const span = Math.max(1, ...points.map((point) => Math.max(Math.abs(point.x - center.x), Math.abs(point.z - center.z))));
+
+    points.forEach((point) => {
+        const u = 0.5 + (point.x - center.x) / (span * 2);
+        const v = 0.5 + (point.z - center.z) / (span * 2);
+        topRing.push(addGeometryVertex(vertices, uvs, point.x, topY, point.z, u, v));
+        bottomRing.push(addGeometryVertex(vertices, uvs, point.x, baseY, point.z, u, v));
+        sideTop.push(addGeometryVertex(vertices, uvs, point.x, topY, point.z, u, 0));
+        sideBottom.push(addGeometryVertex(vertices, uvs, point.x, baseY, point.z, u, 1));
+    });
+
+    for (let i = 0; i < points.length; i += 1) {
+        const next = (i + 1) % points.length;
+        indices.push(topCenter, topRing[next], topRing[i]);
+        indices.push(bottomCenter, bottomRing[i], bottomRing[next]);
+        pushQuad(indices, sideTop[i], sideTop[next], sideBottom[i], sideBottom[next]);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return new THREE.Mesh(geometry, material);
+}
+
 export function buildCircleStrip(center: Point2D, radius: number, width: number, y: number, material: any, segments = 96) {
     return buildRingMesh(center, radius - width / 2, radius + width / 2, y, material, segments);
 }
