@@ -68,6 +68,7 @@ const state: Record<string, any> = {
     selectedPointIndex: null,
     editingRoadId: null,
     activeDrawRoadId: null,
+    activeDrawInsertSide: null,
     drag: null,
     move: null,
     lastGroundPoint: null,
@@ -601,6 +602,7 @@ function setMode(mode) {
     }
     state.mode = mode;
     state.activeDrawRoadId = mode === 'draw' ? state.activeDrawRoadId : null;
+    state.activeDrawInsertSide = mode === 'draw' ? state.activeDrawInsertSide : null;
     if (mode !== 'select') {
         state.editingRoadId = null;
         state.selectedPointIndex = null;
@@ -785,6 +787,7 @@ function beginSelectedRoadMove(anchorPoint = null) {
     state.editingRoadId = null;
     state.selectedPointIndex = null;
     state.activeDrawRoadId = null;
+    state.activeDrawInsertSide = null;
     state.move = {
         type: 'road',
         roadId: road.id,
@@ -1894,6 +1897,7 @@ function onKeyDown(event) {
         }
         state.selectedPointIndex = null;
         state.activeDrawRoadId = null;
+        state.activeDrawInsertSide = null;
         state.selectedRoundaboutId = null;
         state.editingRoadId = null;
         setMode('select');
@@ -1904,14 +1908,35 @@ function onKeyDown(event) {
         setMode('move');
         return;
     }
+    if (event.key.toLowerCase() === 'a') {
+        if (continueRoadDrawingFromSelectedEndpoint()) {
+            event.preventDefault();
+            return;
+        }
+    }
     if (event.key === 'Enter' && state.mode === 'draw') {
         state.activeDrawRoadId = null;
+        state.activeDrawInsertSide = null;
         setStatus('Started a new draw road chain.');
     }
     if ((event.key === 'Backspace' || event.key === 'Delete') && hasSelection()) {
         event.preventDefault();
         deleteSelected();
     }
+}
+
+function continueRoadDrawingFromSelectedEndpoint() {
+    const road = getSelectedRoad();
+    if (!road || !isRoadEditing(road) || !Number.isInteger(state.selectedPointIndex)) return false;
+    if (state.selectedPointIndex !== 0 && state.selectedPointIndex !== road.points.length - 1) {
+        setStatus(`${road.name}: select the first or last node to continue the road.`);
+        return true;
+    }
+    state.activeDrawRoadId = road.id;
+    state.activeDrawInsertSide = state.selectedPointIndex === 0 ? 'start' : 'end';
+    setMode('draw');
+    setStatus(`${road.name}: continuing from ${state.activeDrawInsertSide === 'start' ? 'first' : 'last'} node. Click the ground to add nodes.`);
+    return true;
 }
 
 function isEditableTarget(target) {
@@ -1943,17 +1968,25 @@ function addDrawPoint(point) {
         road = createDefaultRoad(point);
         state.roads.push(road);
         state.activeDrawRoadId = road.id;
+        state.activeDrawInsertSide = 'end';
         enterRoadEditMode(road.id, 0);
         setStatus('First spline node placed. Add one more point to generate the 3D road.');
     } else {
         const wasBuilt = !!road.built;
-        road.points.push({
+        const pointToAdd = {
             ...point,
             smooth: road.points.length > 0 ? 'smooth' : 'corner',
-        });
+        };
+        const insertSide = state.activeDrawInsertSide === 'start' ? 'start' : 'end';
+        if (insertSide === 'start') {
+            road.points.unshift(pointToAdd);
+        } else {
+            road.points.push(pointToAdd);
+        }
         buildGeneratedRoadGeometry(road);
-        enterRoadEditMode(road.id, road.points.length - 1);
-        setStatus(`${road.name}: ${road.points.length} spline nodes. 3D road ${wasBuilt ? 'updated' : 'generated'}.`);
+        enterRoadEditMode(road.id, insertSide === 'start' ? 0 : road.points.length - 1);
+        const direction = insertSide === 'start' ? 'prepended' : 'appended';
+        setStatus(`${road.name}: ${direction} node ${road.points.length}. 3D road ${wasBuilt ? 'updated' : 'generated'}.`);
     }
     if (road.points.length >= 2) {
         rebuildSceneForChangedRoad(road.id);
@@ -2329,6 +2362,7 @@ function selectRoundabout(roundaboutId) {
     state.selectedPointIndex = null;
     state.editingRoadId = null;
     state.activeDrawRoadId = null;
+    state.activeDrawInsertSide = null;
 }
 
 function hasSelection() {
@@ -2441,6 +2475,7 @@ function deleteSelectedRoad() {
     const [removed] = state.roads.splice(index, 1);
     selectRoad(state.roads[Math.max(0, index - 1)]?.id || null, null);
     state.activeDrawRoadId = null;
+    state.activeDrawInsertSide = null;
     rebuildScene();
     setStatus(`Deleted ${removed.name}.`);
 }
@@ -2464,6 +2499,7 @@ function clearProject() {
     state.selectedPointIndex = null;
     state.editingRoadId = null;
     state.activeDrawRoadId = null;
+    state.activeDrawInsertSide = null;
     rebuildScene();
     setStatus('Project cleared.');
 }
