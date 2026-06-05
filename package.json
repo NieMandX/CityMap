@@ -4,8 +4,18 @@
     "version": "0.1.0",
     "description": "Single-viewport web road editor for spline-based 3D road generation.",
     "scripts": {
-        "dev": "python3 -m http.server 4173 --bind 127.0.0.1",
-        "ci:syntax": "node --experimental-default-type=module --check scripts/road-editor.js",
-        "ci:verify": "npm run ci:syntax"
+        "dev": "vite --host 127.0.0.1 --port 4173",
+        "build": "tsc --noEmit && vite build",
+        "build:pages-root": "npm run build && node scripts/sync-pages-root.mjs",
+        "preview": "vite preview --host 127.0.0.1 --port 4173",
+        "ci:syntax": "tsc --noEmit",
+        "ci:verify": "npm run build"
+    },
+    "dependencies": {
+        "three": "^0.184.0"
+    },
+    "devDependencies": {
+        "typescript": "^6.0.3",
+        "vite": "^8.0.16"
     }
 }

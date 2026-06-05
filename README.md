@@ -4,6 +4,7 @@ CityMap is an early RoadBLD-like web prototype for drawing road splines in one 3
 
 ## Current MVP
 
+- Vite + TypeScript application shell.
 - Single Three.js WebGPU viewport with perspective and top views.
 - Automatic WebGL2 fallback through Three.js `WebGPURenderer`; force fallback with `?renderer=webgl`.
 - Road spline drawing by clicking the ground plane.
@@ -29,6 +30,20 @@ http://127.0.0.1:4173/
 ```bash
 npm run ci:verify
 ```
+
+`ci:verify` runs TypeScript checks and a production Vite build.
+
+## Deploy
+
+Pushes to `main` build `dist/` and publish it to GitHub Pages through `.github/workflows/pages.yml`.
+
+For repositories still configured to publish from the branch root, run this before committing:
+
+```bash
+npm run build:pages-root
+```
+
+That command copies the production Vite output into root `index.html` and `assets/`.
 
 ## Notes
 

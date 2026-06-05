@@ -22,9 +22,9 @@ const NORMAL_LINE_LENGTH_M = 2.4;
 const NORMAL_LINE_BIAS_M = 0.08;
 const MAX_NORMAL_LINES_PER_MESH = 260;
 
-const materials = {};
-const dom = {};
-const state = {
+const materials: Record<string, any> = {};
+const dom: Record<string, any> = {};
+const state: Record<string, any> = {
     mode: 'select',
     center: { ...DEFAULT_CENTER },
     sizeM: DEFAULT_SIZE_M,
@@ -1882,7 +1882,7 @@ function getRoundaboutById(roundaboutId) {
     return state.roundabouts.find((roundabout) => roundabout.id === roundaboutId) || null;
 }
 
-function selectRoad(roadId, pointIndex = null, options = {}) {
+function selectRoad(roadId, pointIndex = null, options: { edit?: boolean } = {}) {
     state.selectedRoadId = roadId;
     state.selectedRoundaboutId = null;
     state.editingRoadId = options.edit && roadId ? roadId : null;
