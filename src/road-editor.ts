@@ -11,6 +11,7 @@ import {
     sampleRoadAxis,
     sampleRoadSegment,
 } from './core/geometry';
+import { analyzeRoadTopology } from './core/topology';
 import {
     buildCircleStrip,
     buildDashedCircle,
@@ -55,6 +56,8 @@ const state: Record<string, any> = {
     underlayMode: 'satellite',
     showWireframe: true,
     showNormals: false,
+    showTopology: true,
+    topology: { hubs: [], junctionCount: 0, connectionCount: 0 },
     rendererBackend: 'pending',
     rendererForcedWebGL: false,
     rendererFallbackReason: '',
@@ -235,6 +238,7 @@ function collectDom() {
         rendererState: document.getElementById('rendererState'),
         coordText: document.getElementById('coordText'),
         objectCount: document.getElementById('objectCount'),
+        junctionCount: document.getElementById('junctionCount'),
         selectionState: document.getElementById('selectionState'),
     });
 }
@@ -428,6 +432,21 @@ function initMaterials() {
         depthTest: false,
         depthWrite: false,
     });
+    materials.junctionHub = new THREE.MeshBasicMaterial({
+        color: 0xffd23f,
+        transparent: true,
+        opacity: 0.34,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+    });
+    materials.junctionCore = new THREE.MeshBasicMaterial({
+        color: 0xffd23f,
+        transparent: true,
+        opacity: 0.72,
+        depthTest: false,
+        depthWrite: false,
+    });
 }
 
 function bindUi() {
@@ -573,6 +592,11 @@ function rebuildScene() {
     clearGroup(roadGroup);
     clearGroup(helperGroup);
     clearGroup(exportGroup);
+    state.topology = analyzeRoadTopology(state.roads, {
+        mergeRadiusM: 18,
+        endpointSnapRadiusM: 10,
+        roundabouts: state.roundabouts,
+    });
 
     state.roundabouts.forEach((roundabout) => {
         const generated = createRoundaboutObjects(roundabout);
@@ -584,6 +608,7 @@ function rebuildScene() {
         generated.forEach((obj) => roadGroup.add(obj));
         createRoadHelpers(road).forEach((obj) => helperGroup.add(obj));
     });
+    createTopologyHelpers(state.topology).forEach((obj) => helperGroup.add(obj));
 
     roadGroup.updateMatrixWorld(true);
     syncInspector();
@@ -754,6 +779,77 @@ function createRoadHelpers(road) {
         handle.renderOrder = 4;
         objects.push(handle);
     });
+    return objects;
+}
+
+function createTopologyHelpers(topology) {
+    const objects = [];
+    if (!state.showTopology || !topology?.hubs?.length) return objects;
+
+    topology.hubs
+        .filter((hub) => hub.kind === 'junction')
+        .forEach((hub) => {
+            const radius = Math.max(8, hub.radiusM);
+            const ring = buildCircleStrip(hub.center, radius, 0.8, 1.08, materials.junctionHub, 72);
+            ring.name = `${hub.approachCount}-way ${hub.id}`;
+            ring.renderOrder = 7;
+            ring.userData = {
+                helper: true,
+                exportable: false,
+                kind: 'junction-hub',
+                junctionId: hub.id,
+                approachCount: hub.approachCount,
+                roadIds: hub.roadIds,
+            };
+            objects.push(ring);
+
+            const core = buildDiscVolumeMesh(
+                hub.center,
+                Math.max(1.8, radius * 0.14),
+                1.16,
+                1.1,
+                materials.junctionCore,
+                32,
+            );
+            core.name = `${hub.id} center`;
+            core.renderOrder = 8;
+            core.userData = {
+                helper: true,
+                exportable: false,
+                kind: 'junction-center',
+                junctionId: hub.id,
+            };
+            objects.push(core);
+
+            hub.approaches.forEach((approach, index) => {
+                const arm = buildLine(
+                    [
+                        {
+                            x: hub.center.x + approach.direction.x * Math.max(2, radius * 0.22),
+                            z: hub.center.z + approach.direction.z * Math.max(2, radius * 0.22),
+                        },
+                        {
+                            x: hub.center.x + approach.direction.x * (radius + 10),
+                            z: hub.center.z + approach.direction.z * (radius + 10),
+                        },
+                    ],
+                    0xffd23f,
+                    1.28,
+                );
+                arm.name = `${hub.id} approach ${index + 1} ${approach.roadName}`;
+                arm.renderOrder = 8;
+                arm.userData = {
+                    helper: true,
+                    exportable: false,
+                    kind: 'junction-approach',
+                    junctionId: hub.id,
+                    roadId: approach.roadId,
+                    side: approach.side,
+                };
+                objects.push(arm);
+            });
+        });
+
     return objects;
 }
 
@@ -1536,7 +1632,9 @@ function syncStats() {
     const roadCount = state.roads.length;
     const pointCount = state.roads.reduce((sum, road) => sum + road.points.length, 0);
     const builtCount = state.roads.filter((road) => road.built).length;
+    const junctionCount = state.topology?.junctionCount || 0;
     dom.objectCount.textContent = `${builtCount}/${roadCount} built`;
+    if (dom.junctionCount) dom.junctionCount.textContent = `${junctionCount} junction${junctionCount === 1 ? '' : 's'}`;
     if (roadCount === 1) {
         setPassiveStatus(`1 road, ${pointCount} nodes, ${state.roundabouts.length} roundabouts.`);
     }

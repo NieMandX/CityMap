@@ -6,12 +6,14 @@ CityMap is an early RoadBLD-like web prototype for drawing road splines in one 3
 
 - Vite + TypeScript application shell.
 - Road math is separated into `src/core/geometry.ts`.
+- Road/roundabout topology analysis is separated into `src/core/topology.ts`.
 - Three.js mesh generation is separated into `src/render/mesh-builders.ts`.
 - Single Three.js WebGPU viewport with perspective and top views.
 - Automatic WebGL2 fallback through Three.js `WebGPURenderer`; force fallback with `?renderer=webgl`.
 - Road spline drawing by clicking the ground plane.
 - Editable control points, road width, lane count, lane width, and sidewalk settings.
 - Procedural asphalt, curbs, sidewalks, lane markings, and a simple roundabout generator.
+- Debug junction hub detection for road-road intersections and roundabout approaches.
 - Demo satellite/scheme/mask underlays, image upload, and optional Yandex Static API underlay hook.
 - JSON project export and GLB model export.
 
