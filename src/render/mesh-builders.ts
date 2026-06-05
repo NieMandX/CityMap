@@ -121,7 +121,7 @@ export function buildMeshWireframe(mesh: any, material: any) {
     const line = new THREE.LineSegments(geometry, material);
     line.name = `${mesh.name || 'mesh'} wireframe`;
     line.renderOrder = 5;
-    line.userData = { helper: true, exportable: false };
+    line.userData = { ...(mesh.userData || {}), helper: true, exportable: false };
     return line;
 }
 
@@ -165,7 +165,7 @@ export function buildMeshNormals(mesh: any, material: any) {
     const line = new THREE.LineSegments(geometry, material);
     line.name = `${mesh.name || 'mesh'} normals`;
     line.renderOrder = 6;
-    line.userData = { helper: true, exportable: false, kind: 'normal-debug' };
+    line.userData = { ...(mesh.userData || {}), helper: true, exportable: false, kind: 'normal-debug' };
     return line;
 }
 

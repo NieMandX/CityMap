@@ -720,6 +720,10 @@ function rebuildScene(options: Record<string, any> = {}) {
 }
 
 function rebuildSceneForDrag(changedRoadId = null) {
+    if (changedRoadId) {
+        rebuildChangedRoadSceneForDrag(changedRoadId);
+        return;
+    }
     const changedRoadIds = changedRoadId ? [changedRoadId] : [];
     rebuildScene({
         refreshTopology: false,
@@ -730,6 +734,34 @@ function rebuildSceneForDrag(changedRoadId = null) {
         preserveUnrelatedTopologyObjects: changedRoadIds.length > 0,
         syncUi: false,
     });
+}
+
+function rebuildChangedRoadSceneForDrag(roadId) {
+    const road = getRoadById(roadId);
+    if (!road) return;
+
+    const excludedRoadIds = new Set([roadId]);
+    const renderTopology = filterTopologyForRender(state.topology, excludedRoadIds);
+    state.topologyDirty = true;
+
+    removeGroupObjects(roadGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
+    removeGroupObjects(helperGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
+    clearGroup(exportGroup);
+
+    state.clipRoadsForCurrentRebuild = true;
+    state.renderTopologyForCurrentRebuild = renderTopology;
+    state.unclippedRoadIdsForCurrentRebuild = new Set([roadId]);
+
+    try {
+        createRoadObjects(road).forEach((obj) => roadGroup.add(obj));
+        createRoadHelpers(road).forEach((obj) => helperGroup.add(obj));
+    } finally {
+        state.clipRoadsForCurrentRebuild = true;
+        state.renderTopologyForCurrentRebuild = null;
+        state.unclippedRoadIdsForCurrentRebuild = new Set();
+    }
+    roadGroup.updateMatrixWorld(true);
+    helperGroup.updateMatrixWorld(true);
 }
 
 function rebuildSceneForChangedRoad(roadId) {
@@ -777,19 +809,47 @@ function detachPreservedTopologyObjects(group, excludedRoadIds) {
     return preserved;
 }
 
+function removeGroupObjects(group, predicate) {
+    for (let index = group.children.length - 1; index >= 0; index -= 1) {
+        const child = group.children[index];
+        if (!predicate(child)) continue;
+        group.remove(child);
+        disposeObject(child);
+    }
+}
+
 function isUnaffectedTopologyObject(obj, excludedRoadIds) {
-    const data = obj?.userData || {};
-    const kind = data.kind;
-    const isTopologyObject = kind === 'junction'
-        || kind === 'junction-hub'
-        || kind === 'junction-center'
-        || kind === 'junction-approach';
-    if (!isTopologyObject) return false;
-    const roadIds = Array.isArray(data.roadIds)
-        ? data.roadIds
-        : (data.roadId ? [data.roadId] : []);
+    if (!isTopologySceneObject(obj)) return false;
+    const roadIds = getSceneObjectRoadIds(obj);
     if (roadIds.length === 0) return false;
     return roadIds.every((roadId) => !excludedRoadIds.has(roadId));
+}
+
+function isRoadOwnedSceneObject(obj, roadId) {
+    const data = obj?.userData || {};
+    if (data.roadId !== roadId) return false;
+    return data.kind === 'road' || data.helper === true || data.kind === 'normal-debug';
+}
+
+function isTopologyObjectAffectedByRoad(obj, roadId) {
+    if (!isTopologySceneObject(obj)) return false;
+    return getSceneObjectRoadIds(obj).includes(roadId);
+}
+
+function isTopologySceneObject(obj) {
+    const data = obj?.userData || {};
+    const kind = data.kind;
+    return kind === 'junction'
+        || kind === 'junction-hub'
+        || kind === 'junction-center'
+        || kind === 'junction-approach'
+        || (kind === 'normal-debug' && !!data.junctionId);
+}
+
+function getSceneObjectRoadIds(obj) {
+    const data = obj?.userData || {};
+    if (Array.isArray(data.roadIds)) return data.roadIds;
+    return data.roadId ? [data.roadId] : [];
 }
 
 function createRoadObjects(road) {
@@ -832,12 +892,15 @@ function createRoadSegmentObjects(road, axisPoints, segmentIndex, segmentCount) 
     );
     edgeLeft.name = `${label} left edge line`;
     edgeRight.name = `${label} right edge line`;
+    edgeLeft.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    edgeRight.userData = { roadId: road.id, selectable: true, kind: 'road' };
     objects.push(edgeLeft, edgeRight);
 
     objects.push(...createRoadLaneMarkings(axisPoints, road, label));
 
     const centerLine = buildLine(axisPoints, isSelected ? 0x2d8cff : 0x60717e, 1.16);
     centerLine.name = `${label} centerline`;
+    centerLine.userData = { roadId: road.id, selectable: true, kind: 'road' };
     objects.push(centerLine);
 
     return objects;
