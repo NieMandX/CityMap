@@ -651,6 +651,7 @@ function rebuildScene(options: Record<string, any> = {}) {
     const refreshTopology = options.refreshTopology !== false;
     const includeTopologyObjects = options.includeTopologyObjects !== false;
     const clipRoads = options.clipRoads !== false;
+    const changedRoadIds = Array.isArray(options.changedRoadIds) ? options.changedRoadIds.filter(Boolean) : [];
 
     clearGroup(roadGroup);
     clearGroup(helperGroup);
@@ -660,6 +661,8 @@ function rebuildScene(options: Record<string, any> = {}) {
             mergeRadiusM: 18,
             endpointSnapRadiusM: 10,
             roundabouts: state.roundabouts,
+            changedRoadIds,
+            previousTopology: changedRoadIds.length > 0 ? state.topology : undefined,
         });
         state.topologyDirty = false;
     } else {
@@ -696,6 +699,12 @@ function rebuildSceneForDrag() {
         refreshTopology: false,
         includeTopologyObjects: false,
         clipRoads: false,
+    });
+}
+
+function rebuildSceneForChangedRoad(roadId) {
+    rebuildScene({
+        changedRoadIds: roadId ? [roadId] : [],
     });
 }
 
@@ -1525,9 +1534,14 @@ function onPointerMove(event) {
 function onPointerUp() {
     if (state.drag) {
         const dragType = state.drag.type;
+        const changedRoadId = dragType === 'point' || dragType === 'road' ? state.drag.roadId : null;
         state.drag = null;
         controls.enabled = true;
-        rebuildScene();
+        if (changedRoadId) {
+            rebuildSceneForChangedRoad(changedRoadId);
+        } else {
+            rebuildScene();
+        }
         if (dragType === 'point') setStatus('Node updated. 3D road geometry is in sync.');
         if (dragType === 'road') setStatus('Road moved.');
         if (dragType === 'roundabout') setStatus('Roundabout moved.');
@@ -1619,7 +1633,11 @@ function addDrawPoint(point) {
         enterRoadEditMode(road.id, road.points.length - 1);
         setStatus(`${road.name}: ${road.points.length} spline nodes. 3D road ${wasBuilt ? 'updated' : 'generated'}.`);
     }
-    rebuildScene();
+    if (road.points.length >= 2) {
+        rebuildSceneForChangedRoad(road.id);
+    } else {
+        rebuildScene();
+    }
 }
 
 function insertRoadPoint(road, segmentIndex, point) {
@@ -1632,7 +1650,7 @@ function insertRoadPoint(road, segmentIndex, point) {
     });
     rebuildGeneratedRoadAfterTopologyChange(road);
     enterRoadEditMode(road.id, insertIndex);
-    rebuildScene();
+    rebuildSceneForChangedRoad(road.id);
     setStatus(`${road.name}: inserted node ${insertIndex + 1}. ${road.built ? '3D road rebuilt.' : 'Press Build 3D to generate the road.'}`);
 }
 
@@ -1919,7 +1937,7 @@ function updateSelectedRoadFromInspector() {
     road.sidewalkLeft = dom.sidewalkLeftInput.checked;
     road.sidewalkRight = dom.sidewalkRightInput.checked;
     markRoadDirty(road);
-    rebuildScene();
+    rebuildSceneForChangedRoad(road.id);
 }
 
 function updateSelectedPointFromInspector() {
@@ -1928,7 +1946,7 @@ function updateSelectedPointFromInspector() {
     if (!point) return;
     point.smooth = dom.pointSmoothInput.value;
     rebuildGeneratedRoadAfterGeometryChange(road);
-    rebuildScene();
+    rebuildSceneForChangedRoad(road.id);
     setStatus(`${road.name} node ${state.selectedPointIndex + 1}: ${formatSmoothMode(point.smooth)}. ${road.built ? '3D road rebuilt.' : 'Press Build 3D to generate the road.'}`);
 }
 
@@ -2048,7 +2066,7 @@ function buildSelectedRoad() {
         return;
     }
     buildGeneratedRoadGeometry(road);
-    rebuildScene();
+    rebuildSceneForChangedRoad(road.id);
     setStatus(`${road.name} built as 3D road from ${road.points.length} spline nodes.`);
 }
 
@@ -2086,7 +2104,7 @@ function deleteSelectedPoint() {
 
     state.selectedPointIndex = Math.min(removedIndex, road.points.length - 1);
     rebuildGeneratedRoadAfterTopologyChange(road);
-    rebuildScene();
+    rebuildSceneForChangedRoad(road.id);
 
     const nodeText = road.points.length === 1
         ? 'The road needs one more node before Build 3D.'

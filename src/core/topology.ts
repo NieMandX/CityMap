@@ -12,6 +12,7 @@ import { calculateRoadLaneLayout, type TrafficDirection } from './lanes';
 const DEFAULT_MERGE_RADIUS_M = 18;
 const DEFAULT_ENDPOINT_SNAP_RADIUS_M = 10;
 const DEFAULT_MIN_CROSSING_ANGLE_DEG = 8;
+const DEFAULT_SEGMENT_GRID_SIZE_M = 64;
 
 export type RoadTopologySource = RoadAxisSource & {
     id: string;
@@ -73,6 +74,9 @@ export type AnalyzeRoadTopologyOptions = {
     endpointSnapRadiusM?: number;
     minCrossingAngleDeg?: number;
     roundabouts?: RoundaboutTopologySource[];
+    changedRoadIds?: string[];
+    previousTopology?: RoadTopology;
+    segmentGridSizeM?: number;
 };
 
 type SampledRoad = {
@@ -84,6 +88,7 @@ type SampledRoad = {
 
 type AxisSegment = {
     road: SampledRoad;
+    index: number;
     a: Point2D;
     b: Point2D;
     startM: number;
@@ -106,6 +111,18 @@ export function analyzeRoadTopology(roads: RoadTopologySource[] = [], options: A
     const endpointSnapRadiusM = options.endpointSnapRadiusM ?? DEFAULT_ENDPOINT_SNAP_RADIUS_M;
     const minCrossingAngleRad = ((options.minCrossingAngleDeg ?? DEFAULT_MIN_CROSSING_ANGLE_DEG) * Math.PI) / 180;
     const sampledRoads = roads.map(sampleRoad).filter((sample) => sample.axis.length >= 2);
+    const changedRoadIds = new Set((options.changedRoadIds || []).filter(Boolean));
+    if (changedRoadIds.size > 0 && options.previousTopology) {
+        return analyzeChangedRoadTopology(sampledRoads, {
+            changedRoadIds,
+            previousTopology: options.previousTopology,
+            mergeRadiusM,
+            endpointSnapRadiusM,
+            minCrossingAngleRad,
+            roundabouts: options.roundabouts || [],
+            segmentGridSizeM: options.segmentGridSizeM ?? DEFAULT_SEGMENT_GRID_SIZE_M,
+        });
+    }
     const candidates = collectJunctionCandidates(sampledRoads, endpointSnapRadiusM, minCrossingAngleRad);
     const clusters = clusterCandidates(candidates, mergeRadiusM);
     const roadHubs = clusters
@@ -177,6 +194,7 @@ function sampleRoad(road: RoadTopologySource): SampledRoad {
         if (lengthM <= EPS) continue;
         segments.push({
             road: null as unknown as SampledRoad,
+            index: segments.length,
             a,
             b,
             startM,
@@ -185,10 +203,166 @@ function sampleRoad(road: RoadTopologySource): SampledRoad {
     }
 
     const sampled = { road, axis, totalM, segments };
-    segments.forEach((segment) => {
+    segments.forEach((segment, index) => {
+        segment.index = index;
         segment.road = sampled;
     });
     return sampled;
+}
+
+function analyzeChangedRoadTopology(
+    sampledRoads: SampledRoad[],
+    options: {
+        changedRoadIds: Set<string>;
+        previousTopology: RoadTopology;
+        mergeRadiusM: number;
+        endpointSnapRadiusM: number;
+        minCrossingAngleRad: number;
+        roundabouts: RoundaboutTopologySource[];
+        segmentGridSizeM: number;
+    },
+): RoadTopology {
+    const changedSamples = sampledRoads.filter((sample) => options.changedRoadIds.has(sample.road.id));
+    if (changedSamples.length === 0) {
+        return analyzeRoadTopology(sampledRoads.map((sample) => sample.road), {
+            mergeRadiusM: options.mergeRadiusM,
+            endpointSnapRadiusM: options.endpointSnapRadiusM,
+            minCrossingAngleDeg: (options.minCrossingAngleRad * 180) / Math.PI,
+            roundabouts: options.roundabouts,
+        });
+    }
+
+    const segmentGrid = buildSegmentGrid(
+        sampledRoads.filter((sample) => !options.changedRoadIds.has(sample.road.id)),
+        options.segmentGridSizeM,
+    );
+    const candidates = collectChangedRoadCandidates(
+        changedSamples,
+        segmentGrid,
+        options.mergeRadiusM,
+        options.endpointSnapRadiusM,
+        options.minCrossingAngleRad,
+    );
+    const candidateRoadIds = new Set(candidates.flatMap((candidate) => candidate.roadIds));
+    options.changedRoadIds.forEach((roadId) => candidateRoadIds.add(roadId));
+    const candidateSamples = sampledRoads.filter((sample) => candidateRoadIds.has(sample.road.id));
+    const clusters = clusterCandidates(candidates, options.mergeRadiusM);
+    const roadHubs = clusters
+        .map((cluster, index) => buildJunctionHub(cluster, index, candidateSamples, options.mergeRadiusM, options.endpointSnapRadiusM))
+        .filter((hub) => hub.roadIds.length >= 2 && hub.approachCount >= 2)
+        .filter((hub) => !isInsideRoundaboutHub(hub.center, options.roundabouts));
+
+    const preservedRoadHubs = options.previousTopology.hubs
+        .filter((hub) => hub.source === 'road-crossing')
+        .filter((hub) => !intersectsRoadSet(hub.roadIds, options.changedRoadIds))
+        .filter((hub) => roadHubs.every((freshHub) => distance2(freshHub.center, hub.center) > options.mergeRadiusM));
+
+    const roundaboutHubs = options.roundabouts
+        .map((roundabout, index) => buildRoundaboutHub(roundabout, index, sampledRoads, options.endpointSnapRadiusM))
+        .filter((hub) => hub.roadIds.length >= 2 && hub.approachCount >= 2);
+    const hubs = normalizeTopologyHubIds([...preservedRoadHubs, ...roadHubs, ...roundaboutHubs]
+        .sort((a, b) => b.approachCount - a.approachCount || a.id.localeCompare(b.id)));
+
+    return {
+        hubs,
+        junctionCount: hubs.filter((hub) => hub.kind === 'junction').length,
+        connectionCount: hubs.filter((hub) => hub.kind === 'connection').length,
+    };
+}
+
+function buildSegmentGrid(sampledRoads: SampledRoad[], cellSizeM: number) {
+    const safeCellSizeM = Math.max(8, cellSizeM || DEFAULT_SEGMENT_GRID_SIZE_M);
+    const cells = new Map<string, AxisSegment[]>();
+    sampledRoads.forEach((sample) => {
+        sample.segments.forEach((segment) => {
+            getSegmentCellKeys(segment, safeCellSizeM, 0).forEach((key) => {
+                const list = cells.get(key) || [];
+                list.push(segment);
+                cells.set(key, list);
+            });
+        });
+    });
+    return {
+        cellSizeM: safeCellSizeM,
+        cells,
+    };
+}
+
+function collectChangedRoadCandidates(
+    changedSamples: SampledRoad[],
+    segmentGrid: ReturnType<typeof buildSegmentGrid>,
+    mergeRadiusM: number,
+    endpointSnapRadiusM: number,
+    minCrossingAngleRad: number,
+) {
+    const candidates: JunctionCandidate[] = [];
+    const changedSegmentPaddingM = Math.max(mergeRadiusM, endpointSnapRadiusM) + Math.max(...changedSamples.map((sample) => roadHalfWidth(sample.road)), 0) + 4;
+    const changedTargetPairs = new Set<string>();
+    const targetSegmentsByRoadId = new Map<string, Set<AxisSegment>>();
+
+    changedSamples.forEach((changedSample) => {
+        changedSample.segments.forEach((changedSegment) => {
+            const nearbySegments = querySegmentGrid(segmentGrid, changedSegment, changedSegmentPaddingM);
+            nearbySegments.forEach((targetSegment) => {
+                if (targetSegment.road.road.id === changedSample.road.id) return;
+                const segmentPairKey = `${changedSample.road.id}:${changedSegment.index}:${targetSegment.road.road.id}:${targetSegment.index}`;
+                if (changedTargetPairs.has(segmentPairKey)) return;
+                changedTargetPairs.add(segmentPairKey);
+                addTargetSegment(targetSegmentsByRoadId, targetSegment);
+
+                const intersection = segmentIntersection(changedSegment.a, changedSegment.b, targetSegment.a, targetSegment.b);
+                if (!intersection || intersection.angleRad < minCrossingAngleRad) return;
+                candidates.push({
+                    point: intersection.point,
+                    roadIds: [changedSample.road.id, targetSegment.road.road.id],
+                });
+            });
+        });
+    });
+
+    changedSamples.forEach((changedSample) => {
+        targetSegmentsByRoadId.forEach((targetSegments) => {
+            const targetSample = [...targetSegments][0]?.road;
+            if (!targetSample) return;
+            collectEndpointCandidatesAgainstSegments(candidates, changedSample, targetSample, [...targetSegments], endpointSnapRadiusM);
+            collectEndpointCandidatesAgainstSegments(candidates, targetSample, changedSample, changedSample.segments, endpointSnapRadiusM);
+        });
+    });
+
+    return candidates;
+}
+
+function addTargetSegment(targetSegmentsByRoadId: Map<string, Set<AxisSegment>>, segment: AxisSegment) {
+    const roadId = segment.road.road.id;
+    const segments = targetSegmentsByRoadId.get(roadId) || new Set<AxisSegment>();
+    segments.add(segment);
+    targetSegmentsByRoadId.set(roadId, segments);
+}
+
+function querySegmentGrid(segmentGrid: ReturnType<typeof buildSegmentGrid>, segment: AxisSegment, paddingM: number) {
+    const out = new Set<AxisSegment>();
+    getSegmentCellKeys(segment, segmentGrid.cellSizeM, paddingM).forEach((key) => {
+        (segmentGrid.cells.get(key) || []).forEach((candidate) => out.add(candidate));
+    });
+    return [...out];
+}
+
+function getSegmentCellKeys(segment: AxisSegment, cellSizeM: number, paddingM: number) {
+    const minX = Math.min(segment.a.x, segment.b.x) - paddingM;
+    const maxX = Math.max(segment.a.x, segment.b.x) + paddingM;
+    const minZ = Math.min(segment.a.z, segment.b.z) - paddingM;
+    const maxZ = Math.max(segment.a.z, segment.b.z) + paddingM;
+    const minCellX = Math.floor(minX / cellSizeM);
+    const maxCellX = Math.floor(maxX / cellSizeM);
+    const minCellZ = Math.floor(minZ / cellSizeM);
+    const maxCellZ = Math.floor(maxZ / cellSizeM);
+    const keys: string[] = [];
+    for (let x = minCellX; x <= maxCellX; x += 1) {
+        for (let z = minCellZ; z <= maxCellZ; z += 1) {
+            keys.push(`${x}:${z}`);
+        }
+    }
+    return keys;
 }
 
 function collectJunctionCandidates(sampledRoads: SampledRoad[], endpointSnapRadiusM: number, minCrossingAngleRad: number) {
@@ -222,10 +396,20 @@ function collectCrossingCandidates(candidates: JunctionCandidate[], a: SampledRo
 }
 
 function collectEndpointCandidates(candidates: JunctionCandidate[], endpointRoad: SampledRoad, targetRoad: SampledRoad, endpointSnapRadiusM: number) {
+    collectEndpointCandidatesAgainstSegments(candidates, endpointRoad, targetRoad, targetRoad.segments, endpointSnapRadiusM);
+}
+
+function collectEndpointCandidatesAgainstSegments(
+    candidates: JunctionCandidate[],
+    endpointRoad: SampledRoad,
+    targetRoad: SampledRoad,
+    targetSegments: AxisSegment[],
+    endpointSnapRadiusM: number,
+) {
     const endpoints = [endpointRoad.axis[0], endpointRoad.axis[endpointRoad.axis.length - 1]];
     endpoints.forEach((endpoint) => {
         let best = null;
-        targetRoad.segments.forEach((segment) => {
+        targetSegments.forEach((segment) => {
             const nearest = nearestPointOnSegment(endpoint, segment.a, segment.b);
             if (nearest.distance <= endpointSnapRadiusM && (!best || nearest.distance < best.distance)) {
                 best = nearest;
@@ -418,6 +602,22 @@ function directionBetween(from: Point2D, to: Point2D) {
 
 function roadHalfWidth(road: RoadTopologySource) {
     return Math.max(1, Number(road.width) || 0) * 0.5;
+}
+
+function intersectsRoadSet(roadIds: string[], roadSet: Set<string>) {
+    return roadIds.some((roadId) => roadSet.has(roadId));
+}
+
+function normalizeTopologyHubIds(hubs: JunctionHub[]) {
+    let roadCrossingIndex = 0;
+    return hubs.map((hub) => {
+        if (hub.source !== 'road-crossing') return hub;
+        roadCrossingIndex += 1;
+        return {
+            ...hub,
+            id: `junction-${roadCrossingIndex}`,
+        };
+    });
 }
 
 function cross(a: Point2D, b: Point2D) {
