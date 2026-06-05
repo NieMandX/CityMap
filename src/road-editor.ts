@@ -42,6 +42,7 @@ const SIDEWALK_BASE_Y = 0;
 const SIDEWALK_SURFACE_Y = 0.28;
 const CURB_BASE_Y = 0;
 const CURB_SURFACE_Y = 0.42;
+const ROAD_SELECTION_Y = CURB_SURFACE_Y + 0.045;
 const MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.018;
 const JUNCTION_MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.09;
 const CURB_WIDTH_M = 0.32;
@@ -1170,11 +1171,15 @@ function createRoadHelpers(road) {
     const isActiveDrawRoad = road.id === state.activeDrawRoadId;
     const footprintAxis = road.built && road.builtAxisPoints?.length >= 2 ? road.builtAxisPoints : sampleRoadAxis(road);
     if (footprintAxis.length >= 2) {
-        const previewMaterial = isSelectedRoad
-            ? materials.selectedRoadFootprint
-            : (road.built ? materials.roadFootprint : materials.draftRoadFootprint);
         const footprintSegments = road.built ? getRoadRenderSegments(road, footprintAxis) : [footprintAxis];
         footprintSegments.forEach((segment, index) => {
+            if (road.built && isSelectedRoad) {
+                objects.push(...createSelectedRoadOutline(segment, road, index, footprintSegments.length));
+                return;
+            }
+            const previewMaterial = isSelectedRoad
+                ? materials.selectedRoadFootprint
+                : (road.built ? materials.roadFootprint : materials.draftRoadFootprint);
             const footprint = buildRibbonMesh(segment, road.width + (isSelectedRoad ? 1.2 : 0), 0.24, previewMaterial);
             footprint.name = `${road.name} generated 3D road footprint${footprintSegments.length > 1 ? ` ${index + 1}` : ''}`;
             footprint.userData = { roadId: road.id, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
@@ -1206,6 +1211,28 @@ function createRoadHelpers(road) {
         handle.userData = { roadId: road.id, pointIndex: index, helper: true };
         handle.renderOrder = 4;
         objects.push(handle);
+    });
+    return objects;
+}
+
+function createSelectedRoadOutline(axisPoints, road, segmentIndex, segmentCount) {
+    const objects = [];
+    const label = segmentCount > 1 ? `${road.name} segment ${segmentIndex + 1}` : road.name;
+    const outlineHalfWidth = getRoadVisualHalfWidth(road);
+    [
+        { side: 'left', offset: outlineHalfWidth },
+        { side: 'right', offset: -outlineHalfWidth },
+    ].forEach(({ side, offset }) => {
+        const outline = buildRibbonMesh(
+            offsetPolyline(axisPoints, offset),
+            0.46,
+            ROAD_SELECTION_Y,
+            materials.selectionRing,
+        );
+        outline.name = `${label} ${side} selection outline`;
+        outline.userData = { roadId: road.id, helper: true, kind: 'selected-road-outline' };
+        outline.renderOrder = 6;
+        objects.push(outline);
     });
     return objects;
 }
@@ -1554,15 +1581,16 @@ function addDrawPoint(point) {
         state.roads.push(road);
         state.activeDrawRoadId = road.id;
         enterRoadEditMode(road.id, 0);
-        setStatus('First spline node placed. Add one more point, then Build 3D.');
+        setStatus('First spline node placed. Add one more point to generate the 3D road.');
     } else {
+        const wasBuilt = !!road.built;
         road.points.push({
             ...point,
             smooth: road.points.length > 0 ? 'smooth' : 'corner',
         });
-        markRoadDirty(road);
+        buildGeneratedRoadGeometry(road);
         enterRoadEditMode(road.id, road.points.length - 1);
-        setStatus(`${road.name}: ${road.points.length} spline nodes. Press Build 3D to generate the road.`);
+        setStatus(`${road.name}: ${road.points.length} spline nodes. 3D road ${wasBuilt ? 'updated' : 'generated'}.`);
     }
     rebuildScene();
 }
@@ -1992,12 +2020,18 @@ function buildSelectedRoad() {
         setStatus(`${road.name} needs at least 2 spline nodes before Build 3D.`);
         return;
     }
+    buildGeneratedRoadGeometry(road);
+    rebuildScene();
+    setStatus(`${road.name} built as 3D road from ${road.points.length} spline nodes.`);
+}
+
+function buildGeneratedRoadGeometry(road) {
+    if (!road || road.points.length < 2) return false;
     road.points = normalizeRoadPoints(road.points);
     road.builtAxisPoints = sampleRoadAxis(road);
     road.built = true;
     road.buildDirty = false;
-    rebuildScene();
-    setStatus(`${road.name} built as 3D road from ${road.points.length} spline nodes.`);
+    return true;
 }
 
 function deleteSelected() {
