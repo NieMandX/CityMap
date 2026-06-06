@@ -36,6 +36,7 @@ const DEFAULT_CENTER = { lat: 54.750676, lon: 55.996645 };
 const DEFAULT_SIZE_M = 600;
 const DEFAULT_ROAD_WIDTH_M = 10;
 const DEFAULT_SIDEWALK_WIDTH_M = 2;
+const DEFAULT_SEGMENT_TRANSITION = 'linear';
 const ROAD_BASE_Y = 0;
 const ROAD_SURFACE_Y = 0.18;
 const SIDEWALK_BASE_Y = 0;
@@ -66,6 +67,7 @@ const state: Record<string, any> = {
     selectedRoadId: 'road-1',
     selectedRoundaboutId: null,
     selectedPointIndex: null,
+    selectedSegmentIndex: null,
     editingRoadId: null,
     activeDrawRoadId: null,
     activeDrawInsertSide: null,
@@ -278,6 +280,18 @@ function collectDom() {
         pointSelectInput: document.getElementById('pointSelectInput'),
         pointSmoothInput: document.getElementById('pointSmoothInput'),
         pointIndexInput: document.getElementById('pointIndexInput'),
+        segmentFields: document.getElementById('segmentFields'),
+        segmentSelectInput: document.getElementById('segmentSelectInput'),
+        segmentTransitionInput: document.getElementById('segmentTransitionInput'),
+        segmentRoadWidthInput: document.getElementById('segmentRoadWidthInput'),
+        segmentTrafficDirectionInput: document.getElementById('segmentTrafficDirectionInput'),
+        segmentLaneWidthInput: document.getElementById('segmentLaneWidthInput'),
+        segmentLanesInput: document.getElementById('segmentLanesInput'),
+        segmentLaneSummary: document.getElementById('segmentLaneSummary'),
+        segmentSidewalkWidthInput: document.getElementById('segmentSidewalkWidthInput'),
+        segmentSidewalkLeftInput: document.getElementById('segmentSidewalkLeftInput'),
+        segmentSidewalkRightInput: document.getElementById('segmentSidewalkRightInput'),
+        resetSegmentProfileBtn: document.getElementById('resetSegmentProfileBtn'),
         roundaboutFields: document.getElementById('roundaboutFields'),
         roundaboutNameInput: document.getElementById('roundaboutNameInput'),
         roundaboutRadiusInput: document.getElementById('roundaboutRadiusInput'),
@@ -445,6 +459,14 @@ function initMaterials() {
         opacity: 0.42,
         depthWrite: false,
     });
+    materials.segmentSelection = new THREE.MeshBasicMaterial({
+        color: 0xffd23f,
+        transparent: true,
+        opacity: 0.32,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+    });
     materials.roadFootprint = new THREE.MeshBasicMaterial({
         color: 0xc6d1da,
         transparent: true,
@@ -572,6 +594,23 @@ function bindUi() {
 
     dom.pointSelectInput.addEventListener('change', updateSelectedPointSelectionFromInspector);
     dom.pointSmoothInput.addEventListener('change', updateSelectedPointFromInspector);
+    dom.segmentSelectInput.addEventListener('change', updateSelectedSegmentSelectionFromInspector);
+    [
+        dom.segmentTransitionInput,
+        dom.segmentTrafficDirectionInput,
+    ].forEach((input) => input.addEventListener('change', updateSelectedSegmentFromInspector));
+    [
+        dom.segmentTransitionInput,
+        dom.segmentRoadWidthInput,
+        dom.segmentTrafficDirectionInput,
+        dom.segmentLaneWidthInput,
+        dom.segmentSidewalkWidthInput,
+    ].forEach((input) => input.addEventListener('input', updateSelectedSegmentFromInspector));
+    [
+        dom.segmentSidewalkLeftInput,
+        dom.segmentSidewalkRightInput,
+    ].forEach((input) => input.addEventListener('change', updateSelectedSegmentFromInspector));
+    dom.resetSegmentProfileBtn.addEventListener('click', resetSelectedSegmentProfile);
 
     [
         dom.roundaboutNameInput,
@@ -586,14 +625,86 @@ function normalizeProjectState() {
         road.profileId ||= state.profiles[0]?.id || 'urban-asphalt';
         road.points = normalizeRoadPoints(road.points);
         road.trafficDirection = normalizeTrafficDirection(road.trafficDirection);
+        road.width = clampNumber(road.width ?? DEFAULT_ROAD_WIDTH_M, 2, 80, DEFAULT_ROAD_WIDTH_M);
         road.laneWidth = clampNumber(road.laneWidth ?? DEFAULT_LANE_WIDTH_M, 2, 5, DEFAULT_LANE_WIDTH_M);
+        road.sidewalkWidth = clampNumber(road.sidewalkWidth ?? DEFAULT_SIDEWALK_WIDTH_M, 0, 8, DEFAULT_SIDEWALK_WIDTH_M);
+        road.sidewalkLeft = road.sidewalkLeft !== false;
+        road.sidewalkRight = road.sidewalkRight !== false;
         road.lanes = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection).totalLanes;
+        normalizeRoadSegmentProfileList(road);
         road.built = road.built !== false;
         road.buildDirty = !!road.buildDirty;
         if (road.built && (!Array.isArray(road.builtAxisPoints) || road.builtAxisPoints.length < 2)) {
             road.builtAxisPoints = sampleRoadAxis(road);
         }
     });
+}
+
+function normalizeRoadSegmentProfileList(road) {
+    const segmentCount = getRoadSegmentCount(road);
+    const source = Array.isArray(road.segmentProfiles) ? road.segmentProfiles : [];
+    road.segmentProfiles = Array.from({ length: segmentCount }, (_, index) => {
+        const profile = source[index];
+        return profile ? normalizeRoadSegmentProfile(profile, road) : null;
+    });
+    return road.segmentProfiles;
+}
+
+function getRoadSegmentCount(road) {
+    return Math.max(0, (road?.points?.length || 0) - 1);
+}
+
+function getEffectiveRoadProfile(road, segmentIndex = null) {
+    if (!road) return normalizeRoadSegmentProfile({}, {});
+    const profiles = normalizeRoadSegmentProfileList(road);
+    const override = Number.isInteger(segmentIndex) ? profiles[segmentIndex] : null;
+    return normalizeRoadSegmentProfile(override || {}, road);
+}
+
+function normalizeRoadSegmentProfile(profile, road) {
+    const width = clampNumber(profile?.width ?? road?.width ?? DEFAULT_ROAD_WIDTH_M, 2, 80, road?.width || DEFAULT_ROAD_WIDTH_M);
+    const laneWidth = clampNumber(profile?.laneWidth ?? road?.laneWidth ?? DEFAULT_LANE_WIDTH_M, 2, 5, road?.laneWidth || DEFAULT_LANE_WIDTH_M);
+    const trafficDirection = normalizeTrafficDirection(profile?.trafficDirection ?? road?.trafficDirection);
+    const sidewalkWidth = clampNumber(profile?.sidewalkWidth ?? road?.sidewalkWidth ?? DEFAULT_SIDEWALK_WIDTH_M, 0, 8, road?.sidewalkWidth ?? DEFAULT_SIDEWALK_WIDTH_M);
+    const sidewalkLeft = profile?.sidewalkLeft ?? road?.sidewalkLeft ?? true;
+    const sidewalkRight = profile?.sidewalkRight ?? road?.sidewalkRight ?? true;
+    const laneLayout = calculateRoadLaneLayout(width, laneWidth, trafficDirection);
+    return {
+        width,
+        lanes: laneLayout.totalLanes,
+        laneWidth,
+        trafficDirection: laneLayout.trafficDirection,
+        sidewalkWidth,
+        sidewalkLeft: sidewalkLeft !== false,
+        sidewalkRight: sidewalkRight !== false,
+        transition: normalizeSegmentTransition(profile?.transition),
+    };
+}
+
+function normalizeSegmentTransition(value) {
+    return value === 'step' || value === 'smooth' || value === 'linear'
+        ? value
+        : DEFAULT_SEGMENT_TRANSITION;
+}
+
+function setRoadSegmentProfile(road, segmentIndex, profile) {
+    if (!road || !Number.isInteger(segmentIndex)) return null;
+    const profiles = normalizeRoadSegmentProfileList(road);
+    if (segmentIndex < 0 || segmentIndex >= profiles.length) return null;
+    profiles[segmentIndex] = normalizeRoadSegmentProfile(profile, road);
+    return profiles[segmentIndex];
+}
+
+function resetRoadSegmentProfile(road, segmentIndex) {
+    if (!road || !Number.isInteger(segmentIndex)) return false;
+    const profiles = normalizeRoadSegmentProfileList(road);
+    if (segmentIndex < 0 || segmentIndex >= profiles.length) return false;
+    profiles[segmentIndex] = null;
+    return true;
+}
+
+function cloneSegmentProfile(profile) {
+    return profile ? { ...profile } : null;
 }
 
 function setMode(mode) {
@@ -606,6 +717,7 @@ function setMode(mode) {
     if (mode !== 'select') {
         state.editingRoadId = null;
         state.selectedPointIndex = null;
+        state.selectedSegmentIndex = null;
     }
     dom.editor.dataset.mode = mode;
     dom.toolButtons.forEach((btn) => btn.classList.toggle('is-active', btn.dataset.tool === mode));
@@ -786,6 +898,7 @@ function beginSelectedRoadMove(anchorPoint = null) {
     state.selectedRoundaboutId = null;
     state.editingRoadId = null;
     state.selectedPointIndex = null;
+    state.selectedSegmentIndex = null;
     state.activeDrawRoadId = null;
     state.activeDrawInsertSide = null;
     state.move = {
@@ -998,53 +1111,76 @@ function getSceneObjectRoadIds(obj) {
 
 function createRoadObjects(road) {
     const objects = [];
-    if (!road.built || !road.builtAxisPoints || road.builtAxisPoints.length < 2) return objects;
+    if (!road.built || road.points.length < 2) return objects;
 
-    const axisPoints = road.builtAxisPoints;
-    const renderSegments = getRoadRenderSegments(road, axisPoints);
-    renderSegments.forEach((segment, index) => {
-        objects.push(...createRoadSegmentObjects(road, segment, index, renderSegments.length));
+    normalizeRoadSegmentProfileList(road);
+    const authoredSegments = getRoadAuthoredAxisSegments(road);
+    authoredSegments.forEach(({ axisPoints, segmentIndex }) => {
+        const renderSegments = getRoadRenderSegments(road, axisPoints);
+        renderSegments.forEach((segment, clipIndex) => {
+            objects.push(...createRoadSegmentObjects(
+                road,
+                segment,
+                segmentIndex,
+                getRoadSegmentCount(road),
+                getEffectiveRoadProfile(road, segmentIndex),
+                clipIndex,
+                renderSegments.length,
+            ));
+        });
     });
 
     return objects;
 }
 
-function createRoadSegmentObjects(road, axisPoints, segmentIndex, segmentCount) {
+function getRoadAuthoredAxisSegments(road) {
+    const points = normalizeRoadPoints(road.points);
+    const segments = [];
+    for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+        const axisPoints = sampleRoadSegment(points, segmentIndex);
+        if (axisPoints.length >= 2) segments.push({ axisPoints, segmentIndex });
+    }
+    return segments;
+}
+
+function createRoadSegmentObjects(road, axisPoints, segmentIndex, segmentCount, profile, clipIndex = 0, clipCount = 1) {
     const objects = [];
     const isSelected = state.selectedRoadId === road.id;
-    const label = segmentCount > 1 ? `${road.name} segment ${segmentIndex + 1}` : road.name;
+    const label = segmentCount > 1
+        ? `${road.name} segment ${segmentIndex + 1}${clipCount > 1 ? ` part ${clipIndex + 1}` : ''}`
+        : road.name;
 
-    const asphalt = buildRibbonVolumeMesh(axisPoints, road.width, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt);
+    const asphalt = buildRibbonVolumeMesh(axisPoints, profile.width, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt);
     asphalt.name = `${label} asphalt`;
-    asphalt.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    asphalt.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, asphalt);
 
-    objects.push(...createRoadSideObjects(axisPoints, road, label, 1, 'left', road.sidewalkLeft));
-    objects.push(...createRoadSideObjects(axisPoints, road, label, -1, 'right', road.sidewalkRight));
+    objects.push(...createRoadSideObjects(axisPoints, road, profile, label, 1, 'left', profile.sidewalkLeft, segmentIndex));
+    objects.push(...createRoadSideObjects(axisPoints, road, profile, label, -1, 'right', profile.sidewalkRight, segmentIndex));
 
     const edgeLeft = buildRibbonMesh(
-        offsetPolyline(axisPoints, road.width / 2 - EDGE_MARKING_INSET_M),
+        offsetPolyline(axisPoints, profile.width / 2 - EDGE_MARKING_INSET_M),
         0.16,
         MARKING_SURFACE_Y,
         materials.marking,
     );
     const edgeRight = buildRibbonMesh(
-        offsetPolyline(axisPoints, -road.width / 2 + EDGE_MARKING_INSET_M),
+        offsetPolyline(axisPoints, -profile.width / 2 + EDGE_MARKING_INSET_M),
         0.16,
         MARKING_SURFACE_Y,
         materials.marking,
     );
     edgeLeft.name = `${label} left edge line`;
     edgeRight.name = `${label} right edge line`;
-    edgeLeft.userData = { roadId: road.id, selectable: true, kind: 'road' };
-    edgeRight.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    edgeLeft.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
+    edgeRight.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     objects.push(edgeLeft, edgeRight);
 
-    objects.push(...createRoadLaneMarkings(axisPoints, road, label));
+    objects.push(...createRoadLaneMarkings(axisPoints, road, profile, label, segmentIndex));
 
     const centerLine = buildLine(axisPoints, isSelected ? 0x2d8cff : 0x60717e, 1.16);
     centerLine.name = `${label} centerline`;
-    centerLine.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    centerLine.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     objects.push(centerLine);
 
     return objects;
@@ -1413,10 +1549,10 @@ function angleGapRad(a, b) {
     return ((b - a) + twoPi) % twoPi;
 }
 
-function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enabled) {
+function createRoadSideObjects(axisPoints, road, profile, label, sideSign, sideName, enabled, segmentIndex = null) {
     const objects = [];
-    const sidewalkWidth = Math.max(0, Number(road.sidewalkWidth) || 0);
-    const roadEdge = road.width / 2;
+    const sidewalkWidth = Math.max(0, Number(profile.sidewalkWidth) || 0);
+    const roadEdge = profile.width / 2;
     const innerCurb = buildRibbonVolumeMesh(
         offsetPolyline(axisPoints, sideSign * (roadEdge + CURB_WIDTH_M / 2)),
         CURB_WIDTH_M,
@@ -1425,7 +1561,7 @@ function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enab
         materials.curb,
     );
     innerCurb.name = `${label} ${sideName} inner curb`;
-    innerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    innerCurb.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, innerCurb);
 
     if (!enabled || sidewalkWidth <= 0) return objects;
@@ -1438,7 +1574,7 @@ function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enab
         materials.sidewalk,
     );
     sidewalk.name = `${label} ${sideName} sidewalk`;
-    sidewalk.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    sidewalk.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, sidewalk);
 
     const outerCurb = buildRibbonVolumeMesh(
@@ -1449,7 +1585,7 @@ function createRoadSideObjects(axisPoints, road, label, sideSign, sideName, enab
         materials.curb,
     );
     outerCurb.name = `${label} ${sideName} outer curb`;
-    outerCurb.userData = { roadId: road.id, selectable: true, kind: 'road' };
+    outerCurb.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, outerCurb);
 
     return objects;
@@ -1467,10 +1603,9 @@ function addGeneratedMesh(objects, mesh) {
     }
 }
 
-function createRoadLaneMarkings(axisPoints, road, label = road.name) {
+function createRoadLaneMarkings(axisPoints, road, profile, label = road.name, segmentIndex = null) {
     const objects = [];
-    const layout = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection);
-    road.lanes = layout.totalLanes;
+    const layout = calculateRoadLaneLayout(profile.width, profile.laneWidth, profile.trafficDirection);
     if (layout.boundaryOffsets.length === 0) return objects;
 
     layout.boundaryOffsets.forEach((boundary, index) => {
@@ -1484,7 +1619,7 @@ function createRoadLaneMarkings(axisPoints, road, label = road.name) {
         );
         dashes.forEach((dash, dashIndex) => {
             dash.name = `${label} ${boundary.kind === 'center' ? 'center divider' : 'lane dash'} ${index + 1}.${dashIndex + 1}`;
-            dash.userData = { roadId: road.id, selectable: true, kind: 'road' };
+            dash.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
             objects.push(dash);
         });
     });
@@ -1497,20 +1632,28 @@ function createRoadHelpers(road) {
     const isSelectedRoad = road.id === state.selectedRoadId;
     const isEditingRoad = isRoadEditing(road);
     const isActiveDrawRoad = road.id === state.activeDrawRoadId;
-    const footprintAxis = road.built && road.builtAxisPoints?.length >= 2 ? road.builtAxisPoints : sampleRoadAxis(road);
-    if (footprintAxis.length >= 2) {
-        const footprintSegments = road.built ? getRoadRenderSegments(road, footprintAxis) : [footprintAxis];
-        footprintSegments.forEach((segment, index) => {
+    const footprintSegments = getRoadHelperFootprintSegments(road);
+    if (footprintSegments.length > 0) {
+        footprintSegments.forEach(({ axisPoints, segmentIndex, clipIndex, clipCount }, index) => {
+            const profile = getEffectiveRoadProfile(road, segmentIndex);
             if (road.built && isSelectedRoad) {
-                objects.push(...createSelectedRoadOutline(segment, road, index, footprintSegments.length));
+                objects.push(...createSelectedRoadOutline(
+                    axisPoints,
+                    road,
+                    segmentIndex,
+                    getRoadSegmentCount(road),
+                    profile,
+                    clipIndex,
+                    clipCount,
+                ));
                 return;
             }
             const previewMaterial = isSelectedRoad
                 ? materials.selectedRoadFootprint
                 : (road.built ? materials.roadFootprint : materials.draftRoadFootprint);
-            const footprint = buildRibbonMesh(segment, road.width + (isSelectedRoad ? 1.2 : 0), 0.24, previewMaterial);
+            const footprint = buildRibbonMesh(axisPoints, profile.width + (isSelectedRoad ? 1.2 : 0), 0.24, previewMaterial);
             footprint.name = `${road.name} generated 3D road footprint${footprintSegments.length > 1 ? ` ${index + 1}` : ''}`;
-            footprint.userData = { roadId: road.id, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
+            footprint.userData = { roadId: road.id, segmentIndex, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
             footprint.renderOrder = 2;
             objects.push(footprint);
         });
@@ -1525,6 +1668,29 @@ function createRoadHelpers(road) {
         splineLine.userData = { roadId: road.id, helper: true, kind: 'editable-spline' };
         splineLine.renderOrder = 3;
         objects.push(splineLine);
+    }
+    if (
+        showEditControls
+        && isSelectedRoad
+        && isEditingRoad
+        && Number.isInteger(state.selectedSegmentIndex)
+        && state.selectedSegmentIndex >= 0
+        && state.selectedSegmentIndex < getRoadSegmentCount(road)
+    ) {
+        const selectedAxis = sampleRoadSegment(normalizeRoadPoints(road.points), state.selectedSegmentIndex);
+        if (selectedAxis.length >= 2) {
+            const profile = getEffectiveRoadProfile(road, state.selectedSegmentIndex);
+            const highlight = buildRibbonMesh(
+                selectedAxis,
+                getProfileVisualHalfWidth(profile) * 2 + 1.2,
+                ROAD_SELECTION_Y + 0.035,
+                materials.segmentSelection,
+            );
+            highlight.name = `${road.name} selected segment ${state.selectedSegmentIndex + 1}`;
+            highlight.userData = { roadId: road.id, segmentIndex: state.selectedSegmentIndex, helper: true, kind: 'selected-road-segment' };
+            highlight.renderOrder = 7;
+            objects.push(highlight);
+        }
     }
     if (!showEditControls) return objects;
 
@@ -1543,10 +1709,31 @@ function createRoadHelpers(road) {
     return objects;
 }
 
-function createSelectedRoadOutline(axisPoints, road, segmentIndex, segmentCount) {
+function getRoadHelperFootprintSegments(road) {
+    if (road.built && road.points.length >= 2) {
+        return getRoadAuthoredAxisSegments(road).flatMap(({ axisPoints, segmentIndex }) => {
+            const renderSegments = getRoadRenderSegments(road, axisPoints);
+            return renderSegments.map((segment, clipIndex) => ({
+                axisPoints: segment,
+                segmentIndex,
+                clipIndex,
+                clipCount: renderSegments.length,
+            }));
+        });
+    }
+
+    const axisPoints = sampleRoadAxis(road);
+    return axisPoints.length >= 2
+        ? [{ axisPoints, segmentIndex: null, clipIndex: 0, clipCount: 1 }]
+        : [];
+}
+
+function createSelectedRoadOutline(axisPoints, road, segmentIndex, segmentCount, profile, clipIndex = 0, clipCount = 1) {
     const objects = [];
-    const label = segmentCount > 1 ? `${road.name} segment ${segmentIndex + 1}` : road.name;
-    const outlineHalfWidth = getRoadVisualHalfWidth(road);
+    const label = segmentCount > 1
+        ? `${road.name} segment ${segmentIndex + 1}${clipCount > 1 ? ` part ${clipIndex + 1}` : ''}`
+        : road.name;
+    const outlineHalfWidth = getProfileVisualHalfWidth(profile);
     [
         { side: 'left', offset: outlineHalfWidth },
         { side: 'right', offset: -outlineHalfWidth },
@@ -1558,7 +1745,7 @@ function createSelectedRoadOutline(axisPoints, road, segmentIndex, segmentCount)
             materials.selectionRing,
         );
         outline.name = `${label} ${side} selection outline`;
-        outline.userData = { roadId: road.id, helper: true, kind: 'selected-road-outline' };
+        outline.userData = { roadId: road.id, segmentIndex, helper: true, kind: 'selected-road-outline' };
         outline.renderOrder = 6;
         objects.push(outline);
     });
@@ -1776,7 +1963,19 @@ function onPointerDown(event) {
     const roadHit = findNearestRoad(ground);
     if (roadHit) {
         if (state.selectedRoadId === roadHit.road.id && isRoadEditing(roadHit.road)) {
+            const segmentHit = findNearestRoadSegment(
+                ground,
+                Math.max(10, getRoadVisualHalfWidth(roadHit.road) + 4),
+                roadHit.road.id,
+            );
+            if (segmentHit) {
+                selectRoadSegment(segmentHit.road.id, segmentHit.segmentIndex);
+                rebuildScene();
+                setStatus(`Selected ${segmentHit.road.name} segment ${segmentHit.segmentIndex + 1}.`);
+                return;
+            }
             state.selectedPointIndex = null;
+            state.selectedSegmentIndex = null;
             rebuildScene();
             setStatus(`Editing ${roadHit.road.name}: double-click the road surface to insert a node.`);
             return;
@@ -1896,6 +2095,7 @@ function onKeyDown(event) {
             return;
         }
         state.selectedPointIndex = null;
+        state.selectedSegmentIndex = null;
         state.activeDrawRoadId = null;
         state.activeDrawInsertSide = null;
         state.selectedRoundaboutId = null;
@@ -1973,6 +2173,7 @@ function addDrawPoint(point) {
         setStatus('First spline node placed. Add one more point to generate the 3D road.');
     } else {
         const wasBuilt = !!road.built;
+        const profiles = normalizeRoadSegmentProfileList(road);
         const pointToAdd = {
             ...point,
             smooth: road.points.length > 0 ? 'smooth' : 'corner',
@@ -1980,9 +2181,12 @@ function addDrawPoint(point) {
         const insertSide = state.activeDrawInsertSide === 'start' ? 'start' : 'end';
         if (insertSide === 'start') {
             road.points.unshift(pointToAdd);
+            profiles.unshift(cloneSegmentProfile(profiles[0]));
         } else {
             road.points.push(pointToAdd);
+            profiles.push(cloneSegmentProfile(profiles[profiles.length - 1]));
         }
+        normalizeRoadSegmentProfileList(road);
         buildGeneratedRoadGeometry(road);
         enterRoadEditMode(road.id, insertSide === 'start' ? 0 : road.points.length - 1);
         const direction = insertSide === 'start' ? 'prepended' : 'appended';
@@ -1997,12 +2201,16 @@ function addDrawPoint(point) {
 
 function insertRoadPoint(road, segmentIndex, point) {
     if (!road || segmentIndex < 0 || segmentIndex >= road.points.length - 1) return;
+    const profiles = normalizeRoadSegmentProfileList(road);
+    const splitProfile = cloneSegmentProfile(profiles[segmentIndex]);
     const insertIndex = segmentIndex + 1;
     road.points.splice(insertIndex, 0, {
         x: point.x,
         z: point.z,
         smooth: 'smooth',
     });
+    profiles.splice(insertIndex, 0, splitProfile);
+    normalizeRoadSegmentProfileList(road);
     rebuildGeneratedRoadAfterTopologyChange(road);
     enterRoadEditMode(road.id, insertIndex);
     rebuildSceneForChangedRoad(road.id);
@@ -2021,6 +2229,7 @@ function createDefaultRoad(point) {
         name: `Road ${state.roadSeq}`,
         profileId: selected?.profileId || state.profiles[0]?.id || 'urban-asphalt',
         points: [{ ...point, smooth: 'corner' }],
+        segmentProfiles: [],
         width,
         lanes: laneLayout.totalLanes,
         laneWidth,
@@ -2067,13 +2276,16 @@ function findNearestControlPoint(point, thresholdM) {
 function findNearestRoad(point) {
     let best = null;
     state.roads.forEach((road) => {
-        const axis = road.built && road.builtAxisPoints?.length >= 2 ? road.builtAxisPoints : sampleRoadAxis(road);
-        if (axis.length < 2) return;
-        for (let i = 1; i < axis.length; i += 1) {
-            const distance = distancePointToSegment(point, axis[i - 1], axis[i]);
-            const threshold = getRoadVisualHalfWidth(road) + 2;
-            if (distance <= threshold && (!best || distance < best.distance)) {
-                best = { road, distance };
+        const points = normalizeRoadPoints(road.points);
+        if (points.length < 2) return;
+        for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+            const axis = sampleRoadSegment(points, segmentIndex);
+            for (let i = 1; i < axis.length; i += 1) {
+                const distance = distancePointToSegment(point, axis[i - 1], axis[i]);
+                const threshold = getRoadVisualHalfWidth(road, segmentIndex) + 2;
+                if (distance <= threshold && (!best || distance < best.distance)) {
+                    best = { road, segmentIndex, distance };
+                }
             }
         }
     });
@@ -2104,11 +2316,15 @@ function findNearestRoadSegment(point, thresholdM, roadId = null) {
     return best;
 }
 
-function getRoadVisualHalfWidth(road) {
-    const sidewalkWidth = Math.max(0, Number(road?.sidewalkWidth) || 0);
-    const leftExtension = getRoadSideExtension(road?.sidewalkLeft, sidewalkWidth);
-    const rightExtension = getRoadSideExtension(road?.sidewalkRight, sidewalkWidth);
-    return Math.max(1, Number(road?.width) || 0) / 2 + Math.max(leftExtension, rightExtension);
+function getRoadVisualHalfWidth(road, segmentIndex = null) {
+    return getProfileVisualHalfWidth(getEffectiveRoadProfile(road, segmentIndex));
+}
+
+function getProfileVisualHalfWidth(profile) {
+    const sidewalkWidth = Math.max(0, Number(profile?.sidewalkWidth) || 0);
+    const leftExtension = getRoadSideExtension(profile?.sidewalkLeft, sidewalkWidth);
+    const rightExtension = getRoadSideExtension(profile?.sidewalkRight, sidewalkWidth);
+    return Math.max(1, Number(profile?.width) || 0) / 2 + Math.max(leftExtension, rightExtension);
 }
 
 function getRoadSideExtension(enabled, sidewalkWidth) {
@@ -2210,14 +2426,31 @@ function syncInspector() {
     const selectedPoint = roadIsEditing && Number.isInteger(state.selectedPointIndex)
         ? road.points[state.selectedPointIndex]
         : null;
+    const selectedSegment = roadIsEditing && Number.isInteger(state.selectedSegmentIndex)
+        ? getEffectiveRoadProfile(road, state.selectedSegmentIndex)
+        : null;
 
     dom.roadFields.hidden = !road;
     dom.roundaboutFields.hidden = !roundabout;
     dom.nodeFields.hidden = !roadIsEditing || road.points.length === 0;
+    dom.segmentFields.hidden = !roadIsEditing || getRoadSegmentCount(road) === 0;
     dom.deleteSelectedBtn.disabled = !road && !roundabout;
     dom.buildRoadBtn.disabled = !road || road.points.length < 2;
     dom.buildSelectedRoadBtn.disabled = !road || road.points.length < 2;
     dom.pointSmoothInput.disabled = !selectedPoint;
+    [
+        dom.segmentTransitionInput,
+        dom.segmentRoadWidthInput,
+        dom.segmentTrafficDirectionInput,
+        dom.segmentLaneWidthInput,
+        dom.segmentLanesInput,
+        dom.segmentSidewalkWidthInput,
+        dom.segmentSidewalkLeftInput,
+        dom.segmentSidewalkRightInput,
+        dom.resetSegmentProfileBtn,
+    ].forEach((input) => {
+        input.disabled = !selectedSegment;
+    });
 
     if (roundabout) {
         dom.selectionState.textContent = roundabout.name;
@@ -2237,8 +2470,12 @@ function syncInspector() {
 
     dom.selectionState.textContent = selectedPoint
         ? `${road.name} node ${state.selectedPointIndex + 1}`
-        : `${road.name} ${roadIsEditing ? 'edit' : 'move'}`;
-    dom.deleteSelectedBtn.textContent = selectedPoint ? 'Delete selected node' : 'Delete selected road';
+        : (selectedSegment
+            ? `${road.name} segment ${state.selectedSegmentIndex + 1}`
+            : `${road.name} ${roadIsEditing ? 'edit' : 'move'}`);
+    dom.deleteSelectedBtn.textContent = selectedPoint
+        ? 'Delete selected node'
+        : (selectedSegment ? 'Reset selected segment' : 'Delete selected road');
     const laneLayout = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection);
     road.lanes = laneLayout.totalLanes;
     dom.roadNameInput.value = road.name;
@@ -2252,6 +2489,8 @@ function syncInspector() {
     dom.sidewalkLeftInput.checked = !!road.sidewalkLeft;
     dom.sidewalkRightInput.checked = !!road.sidewalkRight;
     syncPointSelect(road);
+    syncSegmentSelect(road);
+    syncSegmentProfileFields(road, selectedSegment);
     if (selectedPoint) {
         dom.pointSmoothInput.value = selectedPoint.smooth || 'corner';
         dom.pointIndexInput.value = `${state.selectedPointIndex + 1} / ${road.points.length}`;
@@ -2280,6 +2519,43 @@ function syncPointSelect(road) {
     dom.pointSelectInput.value = currentValue;
 }
 
+function syncSegmentSelect(road) {
+    const currentValue = Number.isInteger(state.selectedSegmentIndex) ? String(state.selectedSegmentIndex) : '';
+    const segmentCount = getRoadSegmentCount(road);
+    const profiles = normalizeRoadSegmentProfileList(road);
+    dom.segmentSelectInput.replaceChildren();
+
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No segment';
+    dom.segmentSelectInput.append(none);
+
+    for (let index = 0; index < segmentCount; index += 1) {
+        const option = document.createElement('option');
+        option.value = String(index);
+        option.textContent = `Segment ${index + 1} (${index + 1}-${index + 2})${profiles[index] ? ' override' : ''}`;
+        dom.segmentSelectInput.append(option);
+    }
+
+    dom.segmentSelectInput.value = currentValue;
+}
+
+function syncSegmentProfileFields(road, selectedSegment) {
+    const profile = selectedSegment || getEffectiveRoadProfile(road, null);
+    const layout = calculateRoadLaneLayout(profile.width, profile.laneWidth, profile.trafficDirection);
+    dom.segmentTransitionInput.value = profile.transition;
+    dom.segmentRoadWidthInput.value = formatNumber(profile.width);
+    dom.segmentTrafficDirectionInput.value = layout.trafficDirection;
+    dom.segmentLaneWidthInput.value = formatNumber(profile.laneWidth);
+    dom.segmentLanesInput.value = String(layout.totalLanes);
+    dom.segmentLaneSummary.textContent = selectedSegment
+        ? formatLaneSummary(layout)
+        : 'Select a segment to override its profile.';
+    dom.segmentSidewalkWidthInput.value = formatNumber(profile.sidewalkWidth);
+    dom.segmentSidewalkLeftInput.checked = !!profile.sidewalkLeft;
+    dom.segmentSidewalkRightInput.checked = !!profile.sidewalkRight;
+}
+
 function updateSelectedRoadFromInspector() {
     const road = getSelectedRoad();
     if (!road) return;
@@ -2293,6 +2569,48 @@ function updateSelectedRoadFromInspector() {
     road.sidewalkRight = dom.sidewalkRightInput.checked;
     markRoadDirty(road);
     rebuildSceneForChangedRoad(road.id);
+}
+
+function updateSelectedSegmentSelectionFromInspector() {
+    const road = getSelectedRoad();
+    if (!road) return;
+    const nextIndex = dom.segmentSelectInput.value === '' ? null : Number(dom.segmentSelectInput.value);
+    if (Number.isInteger(nextIndex)) {
+        selectRoadSegment(road.id, nextIndex);
+        rebuildScene();
+        setStatus(`Selected ${road.name} segment ${nextIndex + 1}.`);
+        return;
+    }
+    enterRoadEditMode(road.id, null);
+    rebuildScene();
+    setStatus(`Editing ${road.name}: select a node or segment.`);
+}
+
+function updateSelectedSegmentFromInspector() {
+    const road = getSelectedRoad();
+    if (!road || !Number.isInteger(state.selectedSegmentIndex)) return;
+    const profile = {
+        transition: normalizeSegmentTransition(dom.segmentTransitionInput.value),
+        width: clampNumber(dom.segmentRoadWidthInput.value, 2, 80, road.width),
+        laneWidth: clampNumber(dom.segmentLaneWidthInput.value, 2, 5, road.laneWidth),
+        trafficDirection: normalizeTrafficDirection(dom.segmentTrafficDirectionInput.value),
+        sidewalkWidth: clampNumber(dom.segmentSidewalkWidthInput.value, 0, 8, road.sidewalkWidth),
+        sidewalkLeft: dom.segmentSidewalkLeftInput.checked,
+        sidewalkRight: dom.segmentSidewalkRightInput.checked,
+    };
+    const saved = setRoadSegmentProfile(road, state.selectedSegmentIndex, profile);
+    if (!saved) return;
+    rebuildSceneForChangedRoad(road.id);
+    setStatus(`${road.name} segment ${state.selectedSegmentIndex + 1}: ${formatNumber(saved.width)} m, ${saved.transition} transition.`);
+}
+
+function resetSelectedSegmentProfile() {
+    const road = getSelectedRoad();
+    if (!road || !Number.isInteger(state.selectedSegmentIndex)) return;
+    const segmentIndex = state.selectedSegmentIndex;
+    if (!resetRoadSegmentProfile(road, segmentIndex)) return;
+    rebuildSceneForChangedRoad(road.id);
+    setStatus(`${road.name} segment ${segmentIndex + 1}: reset to road profile.`);
 }
 
 function updateSelectedPointFromInspector() {
@@ -2345,10 +2663,20 @@ function selectRoad(roadId, pointIndex = null, options: { edit?: boolean } = {})
     state.selectedRoundaboutId = null;
     state.editingRoadId = options.edit && roadId ? roadId : null;
     state.selectedPointIndex = options.edit ? pointIndex : null;
+    state.selectedSegmentIndex = null;
 }
 
 function enterRoadEditMode(roadId, pointIndex = null) {
     selectRoad(roadId, pointIndex, { edit: true });
+}
+
+function selectRoadSegment(roadId, segmentIndex) {
+    selectRoad(roadId, null, { edit: true });
+    const road = getRoadById(roadId);
+    const segmentCount = getRoadSegmentCount(road);
+    state.selectedSegmentIndex = Number.isInteger(segmentIndex) && segmentCount > 0
+        ? THREE.MathUtils.clamp(segmentIndex, 0, Math.max(0, segmentCount - 1))
+        : null;
 }
 
 function isRoadEditing(roadOrId) {
@@ -2360,6 +2688,7 @@ function selectRoundabout(roundaboutId) {
     state.selectedRoundaboutId = roundaboutId;
     state.selectedRoadId = null;
     state.selectedPointIndex = null;
+    state.selectedSegmentIndex = null;
     state.editingRoadId = null;
     state.activeDrawRoadId = null;
     state.activeDrawInsertSide = null;
@@ -2374,6 +2703,14 @@ function hasSelectedPoint() {
     return isRoadEditing(road) && Number.isInteger(state.selectedPointIndex) && !!road.points[state.selectedPointIndex];
 }
 
+function hasSelectedSegment() {
+    const road = getSelectedRoad();
+    return isRoadEditing(road)
+        && Number.isInteger(state.selectedSegmentIndex)
+        && state.selectedSegmentIndex >= 0
+        && state.selectedSegmentIndex < getRoadSegmentCount(road);
+}
+
 function markRoadDirty(road) {
     if (!road) return;
     road.buildDirty = true;
@@ -2382,6 +2719,7 @@ function markRoadDirty(road) {
 function rebuildGeneratedRoadAfterGeometryChange(road) {
     if (!road) return;
     road.points = normalizeRoadPoints(road.points);
+    normalizeRoadSegmentProfileList(road);
     if (road.built && road.points.length >= 2) {
         road.builtAxisPoints = sampleRoadAxis(road);
         road.buildDirty = false;
@@ -2394,6 +2732,7 @@ function rebuildGeneratedRoadAfterTopologyChange(road) {
     if (!road) return;
     const wasBuilt = !!road.built;
     road.points = normalizeRoadPoints(road.points);
+    normalizeRoadSegmentProfileList(road);
     if (road.points.length < 2) {
         road.built = false;
         road.builtAxisPoints = [];
@@ -2429,6 +2768,7 @@ function buildSelectedRoad() {
 function buildGeneratedRoadGeometry(road) {
     if (!road || road.points.length < 2) return false;
     road.points = normalizeRoadPoints(road.points);
+    normalizeRoadSegmentProfileList(road);
     road.builtAxisPoints = sampleRoadAxis(road);
     road.built = true;
     road.buildDirty = false;
@@ -2438,6 +2778,10 @@ function buildGeneratedRoadGeometry(road) {
 function deleteSelected() {
     if (hasSelectedPoint()) {
         deleteSelectedPoint();
+        return;
+    }
+    if (hasSelectedSegment()) {
+        resetSelectedSegmentProfile();
         return;
     }
     if (state.selectedRoundaboutId) {
@@ -2451,6 +2795,7 @@ function deleteSelectedPoint() {
     const road = getSelectedRoad();
     if (!road || !Number.isInteger(state.selectedPointIndex)) return;
     const removedIndex = state.selectedPointIndex;
+    const profiles = normalizeRoadSegmentProfileList(road);
     road.points.splice(removedIndex, 1);
 
     if (road.points.length === 0) {
@@ -2458,7 +2803,13 @@ function deleteSelectedPoint() {
         return;
     }
 
+    const profileIndexToRemove = removedIndex === 0
+        ? 0
+        : Math.min(removedIndex, profiles.length - 1);
+    profiles.splice(profileIndexToRemove, 1);
+    normalizeRoadSegmentProfileList(road);
     state.selectedPointIndex = Math.min(removedIndex, road.points.length - 1);
+    state.selectedSegmentIndex = null;
     rebuildGeneratedRoadAfterTopologyChange(road);
     rebuildSceneForChangedRoad(road.id);
 
@@ -2497,6 +2848,7 @@ function clearProject() {
     state.selectedRoadId = null;
     state.selectedRoundaboutId = null;
     state.selectedPointIndex = null;
+    state.selectedSegmentIndex = null;
     state.editingRoadId = null;
     state.activeDrawRoadId = null;
     state.activeDrawInsertSide = null;

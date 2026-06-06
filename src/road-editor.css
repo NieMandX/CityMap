@@ -401,9 +401,14 @@ input[type="checkbox"] {
     margin: 0 0 10px;
 }
 
-.node-fields {
+.node-fields,
+.segment-fields {
     padding: 8px 0 2px;
     border-top: 1px solid var(--road-line);
+}
+
+.segment-fields {
+    margin-top: 8px;
 }
 
 button:disabled,

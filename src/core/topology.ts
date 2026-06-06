@@ -2,8 +2,11 @@ import {
     distance2,
     EPS,
     nearestPointOnSegment,
+    normalizeRoadPoints,
     pointAtDistance,
+    polylineLength,
     sampleRoadAxis,
+    sampleRoadSegment,
     type Point2D,
     type RoadAxisSource,
 } from './geometry';
@@ -24,8 +27,19 @@ export type RoadTopologySource = RoadAxisSource & {
     sidewalkWidth?: number;
     sidewalkLeft?: boolean;
     sidewalkRight?: boolean;
+    segmentProfiles?: Array<RoadTopologySegmentProfile | null>;
     built?: boolean;
     builtAxisPoints?: Point2D[];
+};
+
+export type RoadTopologySegmentProfile = {
+    width?: number;
+    lanes?: number;
+    laneWidth?: number;
+    trafficDirection?: TrafficDirection;
+    sidewalkWidth?: number;
+    sidewalkLeft?: boolean;
+    sidewalkRight?: boolean;
 };
 
 export type RoundaboutTopologySource = {
@@ -84,6 +98,13 @@ type SampledRoad = {
     axis: Point2D[];
     totalM: number;
     segments: AxisSegment[];
+    profileRanges: RoadProfileRange[];
+};
+
+type RoadProfileRange = {
+    segmentIndex: number;
+    startM: number;
+    endM: number;
 };
 
 type AxisSegment = {
@@ -182,6 +203,7 @@ function sampleRoad(road: RoadTopologySource): SampledRoad {
     const axis = road.built && Array.isArray(road.builtAxisPoints) && road.builtAxisPoints.length >= 2
         ? road.builtAxisPoints.map((point) => ({ x: point.x, z: point.z }))
         : sampleRoadAxis(road);
+    const profileRanges = buildRoadProfileRanges(road);
     const segments: AxisSegment[] = [];
     let totalM = 0;
 
@@ -202,12 +224,32 @@ function sampleRoad(road: RoadTopologySource): SampledRoad {
         });
     }
 
-    const sampled = { road, axis, totalM, segments };
+    const sampled = { road, axis, totalM, segments, profileRanges };
     segments.forEach((segment, index) => {
         segment.index = index;
         segment.road = sampled;
     });
     return sampled;
+}
+
+function buildRoadProfileRanges(road: RoadTopologySource): RoadProfileRange[] {
+    const points = normalizeRoadPoints(road.points);
+    const ranges: RoadProfileRange[] = [];
+    let cursor = 0;
+
+    for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+        const segment = sampleRoadSegment(points, segmentIndex);
+        const lengthM = polylineLength(segment);
+        if (lengthM <= EPS) continue;
+        ranges.push({
+            segmentIndex,
+            startM: cursor,
+            endM: cursor + lengthM,
+        });
+        cursor += lengthM;
+    }
+
+    return ranges;
 }
 
 function analyzeChangedRoadTopology(
@@ -472,7 +514,7 @@ function buildJunctionHub(
     approaches.sort((a, b) => a.angleRad - b.angleRad);
 
     const roadIds = [...new Set(approaches.map((approach) => approach.roadId))];
-    const widestRoadM = Math.max(0, ...participatingRoads.map((sample) => Number(sample.road.width) || 0));
+    const widestRoadM = Math.max(0, ...participatingRoads.map((sample) => getMaxRoadWidthM(sample.road)));
     const radiusM = Math.max(8, Math.min(34, widestRoadM * 0.75 + endpointSnapRadiusM * 0.45));
 
     return {
@@ -490,30 +532,63 @@ function buildJunctionHub(
 function buildRoadApproaches(sample: SampledRoad, center: Point2D, endpointSnapRadiusM: number): JunctionApproach[] {
     const nearest = nearestOnSampledRoad(sample, center);
     const roadName = sample.road.name || sample.road.id;
-    const widthM = Math.max(1, Number(sample.road.width) || 0);
-    const layout = calculateRoadLaneLayout(widthM, sample.road.laneWidth, sample.road.trafficDirection);
-    const lanes = layout.totalLanes;
-    const laneWidthM = layout.laneWidthM;
-    const sidewalkEnabled = sample.road.sidewalkLeft !== false || sample.road.sidewalkRight !== false;
-    const sidewalkWidthM = sidewalkEnabled ? Math.max(0, Number(sample.road.sidewalkWidth) || 0) : 0;
+    const profile = getRoadProfileAtDistance(sample, nearest.distanceM);
     const lookahead = Math.max(8, Math.min(22, sample.totalM * 0.2));
 
     if (nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
-        return [makeApproach(sample.road.id, roadName, 'start', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'start', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
     }
 
     if (sample.totalM - nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
-        return [makeApproach(sample.road.id, roadName, 'end', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'end', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
     }
 
     const backwardTarget = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
     const forwardTarget = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
     return [
-        makeApproach(sample.road.id, roadName, 'backward', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, backwardTarget)),
-        makeApproach(sample.road.id, roadName, 'forward', widthM, lanes, laneWidthM, layout.trafficDirection, sidewalkWidthM, nearest, directionBetween(nearest.point, forwardTarget)),
+        makeApproach(sample.road.id, roadName, 'backward', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, backwardTarget)),
+        makeApproach(sample.road.id, roadName, 'forward', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, forwardTarget)),
     ];
+}
+
+function getRoadProfileAtDistance(sample: SampledRoad, distanceM: number) {
+    const ranges = sample.profileRanges;
+    const range = ranges.find((item) => distanceM >= item.startM - EPS && distanceM <= item.endM + EPS)
+        || ranges[ranges.length - 1];
+    return getRoadTopologyProfile(sample.road, range?.segmentIndex ?? null);
+}
+
+function getRoadTopologyProfile(road: RoadTopologySource, segmentIndex: number | null = null) {
+    const override = Number.isInteger(segmentIndex)
+        ? road.segmentProfiles?.[segmentIndex as number]
+        : null;
+    const widthM = Math.max(1, Number(override?.width ?? road.width) || 0);
+    const laneWidthM = Math.max(0.5, Number(override?.laneWidth ?? road.laneWidth) || 3.5);
+    const layout = calculateRoadLaneLayout(widthM, laneWidthM, override?.trafficDirection ?? road.trafficDirection);
+    const sidewalkLeft = override?.sidewalkLeft ?? road.sidewalkLeft ?? true;
+    const sidewalkRight = override?.sidewalkRight ?? road.sidewalkRight ?? true;
+    const sidewalkEnabled = sidewalkLeft !== false || sidewalkRight !== false;
+    const sidewalkWidthM = sidewalkEnabled
+        ? Math.max(0, Number(override?.sidewalkWidth ?? road.sidewalkWidth) || 0)
+        : 0;
+
+    return {
+        widthM,
+        lanes: layout.totalLanes,
+        laneWidthM: layout.laneWidthM,
+        trafficDirection: layout.trafficDirection,
+        sidewalkWidthM,
+    };
+}
+
+function getMaxRoadWidthM(road: RoadTopologySource) {
+    const widths = [
+        Math.max(1, Number(road.width) || 0),
+        ...(road.segmentProfiles || []).map((profile) => Math.max(0, Number(profile?.width) || 0)),
+    ];
+    return Math.max(...widths);
 }
 
 function makeApproach(
@@ -601,7 +676,7 @@ function directionBetween(from: Point2D, to: Point2D) {
 }
 
 function roadHalfWidth(road: RoadTopologySource) {
-    return Math.max(1, Number(road.width) || 0) * 0.5;
+    return getMaxRoadWidthM(road) * 0.5;
 }
 
 function intersectsRoadSet(roadIds: string[], roadSet: Set<string>) {
