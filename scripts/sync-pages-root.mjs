@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,5 +7,5 @@ const distDir = resolve(rootDir, 'dist');
 
 await mkdir(rootDir, { recursive: true });
 await cp(resolve(distDir, 'index.html'), resolve(rootDir, 'index.html'));
-await rm(resolve(rootDir, 'assets'), { recursive: true, force: true });
+await mkdir(resolve(rootDir, 'assets'), { recursive: true });
 await cp(resolve(distDir, 'assets'), resolve(rootDir, 'assets'), { recursive: true });
