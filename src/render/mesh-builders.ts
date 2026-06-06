@@ -14,6 +14,10 @@ const NORMAL_LINE_BIAS_M = 0.08;
 const MAX_NORMAL_LINES_PER_MESH = 260;
 
 export function buildRibbonMesh(points: Point2D[], width: number, y: number, material: any) {
+    return buildVariableRibbonMesh(points, makeConstantWidths(points, width), y, material);
+}
+
+export function buildVariableRibbonMesh(points: Point2D[], widths: number[], y: number, material: any) {
     if (!points || points.length < 2) {
         return new THREE.Mesh(new THREE.BufferGeometry(), material);
     }
@@ -22,10 +26,13 @@ export function buildRibbonMesh(points: Point2D[], width: number, y: number, mat
     const uvs = [];
     const indices = [];
     let distance = 0;
+    const safeWidths = normalizeRibbonWidths(points, widths);
+    const uvWidth = Math.max(1, averageWidth(safeWidths));
 
     for (let i = 0; i < points.length; i += 1) {
         if (i > 0) distance += distance2(points[i - 1], points[i]);
         const normal = getPointNormal(points, i);
+        const width = safeWidths[i];
         const left = {
             x: points[i].x + normal.x * width * 0.5,
             z: points[i].z + normal.z * width * 0.5,
@@ -35,7 +42,7 @@ export function buildRibbonMesh(points: Point2D[], width: number, y: number, mat
             z: points[i].z - normal.z * width * 0.5,
         };
         vertices.push(left.x, y, left.z, right.x, y, right.z);
-        uvs.push(distance / Math.max(width, 1), 0, distance / Math.max(width, 1), 1);
+        uvs.push(distance / uvWidth, 0, distance / uvWidth, 1);
     }
 
     for (let i = 0; i < points.length - 1; i += 1) {
@@ -52,6 +59,10 @@ export function buildRibbonMesh(points: Point2D[], width: number, y: number, mat
 }
 
 export function buildRibbonVolumeMesh(points: Point2D[], width: number, topY: number, baseY: number, material: any) {
+    return buildVariableRibbonVolumeMesh(points, makeConstantWidths(points, width), topY, baseY, material);
+}
+
+export function buildVariableRibbonVolumeMesh(points: Point2D[], widths: number[], topY: number, baseY: number, material: any) {
     if (!points || points.length < 2) {
         return new THREE.Mesh(new THREE.BufferGeometry(), material);
     }
@@ -68,10 +79,13 @@ export function buildRibbonVolumeMesh(points: Point2D[], width: number, topY: nu
     const rightSideTop = [];
     const rightSideBottom = [];
     let distance = 0;
+    const safeWidths = normalizeRibbonWidths(points, widths);
+    const uvWidth = Math.max(1, averageWidth(safeWidths));
 
     for (let i = 0; i < points.length; i += 1) {
         if (i > 0) distance += distance2(points[i - 1], points[i]);
         const normal = getPointNormal(points, i);
+        const width = safeWidths[i];
         const left = {
             x: points[i].x + normal.x * width * 0.5,
             z: points[i].z + normal.z * width * 0.5,
@@ -80,7 +94,7 @@ export function buildRibbonVolumeMesh(points: Point2D[], width: number, topY: nu
             x: points[i].x - normal.x * width * 0.5,
             z: points[i].z - normal.z * width * 0.5,
         };
-        const u = distance / Math.max(width, 1);
+        const u = distance / uvWidth;
         topLeft.push(addGeometryVertex(vertices, uvs, left.x, topY, left.z, u, 0));
         topRight.push(addGeometryVertex(vertices, uvs, right.x, topY, right.z, u, 1));
         bottomLeft.push(addGeometryVertex(vertices, uvs, left.x, baseY, left.z, u, 0));
@@ -99,8 +113,8 @@ export function buildRibbonVolumeMesh(points: Point2D[], width: number, topY: nu
         pushQuad(indices, rightSideTop[i], rightSideTop[next], rightSideBottom[i], rightSideBottom[next]);
     }
 
-    pushRibbonCap(indices, vertices, uvs, points, width, 0, topY, baseY, false);
-    pushRibbonCap(indices, vertices, uvs, points, width, points.length - 1, topY, baseY, true);
+    pushRibbonCap(indices, vertices, uvs, points, safeWidths[0], 0, topY, baseY, false);
+    pushRibbonCap(indices, vertices, uvs, points, safeWidths[safeWidths.length - 1], points.length - 1, topY, baseY, true);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -108,6 +122,25 @@ export function buildRibbonVolumeMesh(points: Point2D[], width: number, topY: nu
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     return new THREE.Mesh(geometry, material);
+}
+
+function makeConstantWidths(points: Point2D[] = [], width: number) {
+    return Array.from({ length: points.length }, () => width);
+}
+
+function normalizeRibbonWidths(points: Point2D[] = [], widths: number[] = []) {
+    return points.map((_, index) => {
+        const width = Number(widths[index]);
+        if (Number.isFinite(width)) return Math.max(0.01, width);
+        const previous = Number(widths[index - 1]);
+        if (Number.isFinite(previous)) return Math.max(0.01, previous);
+        return 0.01;
+    });
+}
+
+function averageWidth(widths: number[]) {
+    if (!widths.length) return 1;
+    return widths.reduce((sum, width) => sum + width, 0) / widths.length;
 }
 
 export function buildMeshWireframe(mesh: any, material: any) {
