@@ -1368,7 +1368,12 @@ function createRoadSegmentObjects(
     const roadWidths = getProfileSampleWidths(profileSamples, 'width');
     const normalHints = createRoadNormalHints(axisPoints, fullRoadAxis);
 
-    const asphalt = buildVariableRibbonVolumeMesh(axisPoints, roadWidths, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt, normalHints);
+    const asphaltAxis = createVariableOffsetPolyline(
+        axisPoints,
+        profileSamples.map(getProfileSampleRoadCenterOffset),
+        normalHints,
+    );
+    const asphalt = buildVariableRibbonVolumeMesh(asphaltAxis, roadWidths, ROAD_SURFACE_Y, ROAD_BASE_Y, materials.asphalt, normalHints);
     asphalt.name = `${label} asphalt`;
     asphalt.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
     addGeneratedMesh(objects, asphalt);
@@ -1380,7 +1385,7 @@ function createRoadSegmentObjects(
     const edgeLeft = buildRibbonMesh(
         createVariableOffsetPolyline(
             axisPoints,
-            profileSamples.map((sample) => getProfileSampleRoadWidth(sample) / 2 - EDGE_MARKING_INSET_M),
+            profileSamples.map((sample) => getProfileSampleRoadEdgeOffset(sample, 'left') - EDGE_MARKING_INSET_M),
             normalHints,
         ),
         0.16,
@@ -1391,7 +1396,7 @@ function createRoadSegmentObjects(
     const edgeRight = buildRibbonMesh(
         createVariableOffsetPolyline(
             axisPoints,
-            profileSamples.map((sample) => -getProfileSampleRoadWidth(sample) / 2 + EDGE_MARKING_INSET_M),
+            profileSamples.map((sample) => getProfileSampleRoadEdgeOffset(sample, 'right') + EDGE_MARKING_INSET_M),
             normalHints,
         ),
         0.16,
@@ -1787,11 +1792,11 @@ function angleGapRad(a, b) {
 
 function createRoadSideObjects(axisPoints, road, profileSamples, label, sideSign, sideName, segmentIndex = null, normalHints = []) {
     const objects = [];
-    const roadEdges = profileSamples.map((sample) => getProfileSampleRoadWidth(sample) / 2);
+    const roadEdges = profileSamples.map((sample) => getProfileSampleRoadEdgeOffset(sample, sideName));
     const sidewalkWidths = profileSamples.map((sample) => getProfileSampleSidewalkWidth(sample, sideName));
     const innerCurbAxis = createVariableOffsetPolyline(
         axisPoints,
-        roadEdges.map((roadEdge) => sideSign * (roadEdge + CURB_WIDTH_M / 2)),
+        roadEdges.map((roadEdge) => roadEdge + sideSign * CURB_WIDTH_M / 2),
         normalHints,
     );
     const innerCurb = buildRibbonVolumeMesh(
@@ -1810,8 +1815,8 @@ function createRoadSideObjects(axisPoints, road, profileSamples, label, sideSign
 
     const sidewalkAxis = createVariableOffsetPolyline(
         axisPoints,
-        roadEdges.map((roadEdge, index) => sideSign * (
-            roadEdge + CURB_WIDTH_M + getPositiveRibbonWidth(sidewalkWidths[index]) / 2
+        roadEdges.map((roadEdge, index) => (
+            roadEdge + sideSign * (CURB_WIDTH_M + getPositiveRibbonWidth(sidewalkWidths[index]) / 2)
         )),
         normalHints,
     );
@@ -1829,8 +1834,8 @@ function createRoadSideObjects(axisPoints, road, profileSamples, label, sideSign
 
     const outerCurbAxis = createVariableOffsetPolyline(
         axisPoints,
-        roadEdges.map((roadEdge, index) => sideSign * (
-            roadEdge + CURB_WIDTH_M + getPositiveRibbonWidth(sidewalkWidths[index]) + CURB_WIDTH_M / 2
+        roadEdges.map((roadEdge, index) => (
+            roadEdge + sideSign * (CURB_WIDTH_M + getPositiveRibbonWidth(sidewalkWidths[index]) + CURB_WIDTH_M / 2)
         )),
         normalHints,
     );
@@ -1965,7 +1970,15 @@ function createRoadHelpers(road) {
                 const sample = profileSamples[Math.min(sampleIndex, profileSamples.length - 1)] || profile;
                 return getProfileSampleRoadWidth(sample) + (isSelectedRoad ? 1.2 : 0);
             });
-            const footprint = buildVariableRibbonMesh(axisPoints, footprintWidths, 0.24, previewMaterial, normalHints);
+            const footprintAxis = createVariableOffsetPolyline(
+                axisPoints,
+                axisPoints.map((_, sampleIndex) => {
+                    const sample = profileSamples[Math.min(sampleIndex, profileSamples.length - 1)] || profile;
+                    return getProfileSampleRoadCenterOffset(sample);
+                }),
+                normalHints,
+            );
+            const footprint = buildVariableRibbonMesh(footprintAxis, footprintWidths, 0.24, previewMaterial, normalHints);
             footprint.name = `${road.name} generated 3D road footprint${footprintSegments.length > 1 ? ` ${index + 1}` : ''}`;
             footprint.userData = { roadId: road.id, segmentIndex, helper: true, kind: road.built ? 'built-road-preview' : 'draft-road-preview' };
             footprint.renderOrder = 2;
@@ -2002,7 +2015,11 @@ function createRoadHelpers(road) {
                 selectedAxis,
             );
             const highlight = buildVariableRibbonMesh(
-                selectedAxis,
+                createVariableOffsetPolyline(
+                    selectedAxis,
+                    profileSamples.map(getProfileSampleVisualCenterOffset),
+                    normalHints,
+                ),
                 profileSamples.map((sample) => getProfileSampleVisualHalfWidth(sample) * 2 + 1.2),
                 ROAD_SELECTION_Y + 0.035,
                 materials.segmentSelection,
@@ -2071,14 +2088,17 @@ function createSelectedRoadOutline(
     const profileSamples = Number.isInteger(segmentIndex)
         ? createTransitionedProfileSamples(road, segmentIndex, axisPoints, fullAxisPoints)
         : axisPoints.map(() => profile);
-    const outlineHalfWidths = profileSamples.map(getProfileSampleVisualHalfWidth);
     const normalHints = createRoadNormalHints(axisPoints, fullRoadAxis);
     [
-        { side: 'left', sign: 1 },
-        { side: 'right', sign: -1 },
-    ].forEach(({ side, sign }) => {
+        { side: 'left' },
+        { side: 'right' },
+    ].forEach(({ side }) => {
         const outline = buildRibbonMesh(
-            createVariableOffsetPolyline(axisPoints, outlineHalfWidths.map((width) => sign * width), normalHints),
+            createVariableOffsetPolyline(
+                axisPoints,
+                profileSamples.map((sample) => getProfileSampleVisualEdgeOffset(sample, side)),
+                normalHints,
+            ),
             0.46,
             ROAD_SELECTION_Y,
             materials.selectionRing,
@@ -2661,23 +2681,55 @@ function getRoadVisualHalfWidth(road, segmentIndex = null) {
 }
 
 function getProfileVisualHalfWidth(profile) {
-    const leftSidewalkWidth = getProfileSidewalkWidth(profile, 'left');
-    const rightSidewalkWidth = getProfileSidewalkWidth(profile, 'right');
-    const leftExtension = getRoadSideExtension(leftSidewalkWidth > EPS, leftSidewalkWidth);
-    const rightExtension = getRoadSideExtension(rightSidewalkWidth > EPS, rightSidewalkWidth);
-    return Math.max(1, Number(profile?.width) || 0) / 2 + Math.max(leftExtension, rightExtension);
+    return Math.max(
+        Math.abs(getProfileSampleVisualEdgeOffset(profile, 'left')),
+        Math.abs(getProfileSampleVisualEdgeOffset(profile, 'right')),
+    );
 }
 
 function getProfileSampleVisualHalfWidth(sample) {
+    const leftEdge = getProfileSampleVisualEdgeOffset(sample, 'left');
+    const rightEdge = getProfileSampleVisualEdgeOffset(sample, 'right');
+    return Math.max(0.5, Math.abs(leftEdge - rightEdge) / 2);
+}
+
+function getProfileSampleVisualCenterOffset(sample) {
+    const leftEdge = getProfileSampleVisualEdgeOffset(sample, 'left');
+    const rightEdge = getProfileSampleVisualEdgeOffset(sample, 'right');
+    return (leftEdge + rightEdge) / 2;
+}
+
+function getProfileSampleVisualEdgeOffset(sample, side) {
     const leftSidewalkWidth = getProfileSampleSidewalkWidth(sample, 'left');
     const rightSidewalkWidth = getProfileSampleSidewalkWidth(sample, 'right');
-    const leftExtension = getRoadSideExtension(leftSidewalkWidth > EPS, leftSidewalkWidth);
-    const rightExtension = getRoadSideExtension(rightSidewalkWidth > EPS, rightSidewalkWidth);
-    return getProfileSampleRoadWidth(sample) / 2 + Math.max(leftExtension, rightExtension);
+    if (side === 'left') {
+        return getProfileSampleRoadEdgeOffset(sample, 'left')
+            + getRoadSideExtension(leftSidewalkWidth > EPS, leftSidewalkWidth);
+    }
+    return getProfileSampleRoadEdgeOffset(sample, 'right')
+        - getRoadSideExtension(rightSidewalkWidth > EPS, rightSidewalkWidth);
 }
 
 function getProfileSampleRoadWidth(sample) {
     return Math.max(1, Number(sample?.width) || 0);
+}
+
+function getProfileSampleRoadCenterOffset(sample) {
+    const leftEdge = getProfileSampleRoadEdgeOffset(sample, 'left');
+    const rightEdge = getProfileSampleRoadEdgeOffset(sample, 'right');
+    return (leftEdge + rightEdge) / 2;
+}
+
+function getProfileSampleRoadEdgeOffset(sample, side) {
+    const layout = getLaneLayoutForProfile(sample);
+    if (layout.trafficDirection === 'two-way') {
+        const dividerHalfWidth = layout.dividerWidthM / 2;
+        return side === 'left'
+            ? dividerHalfWidth + layout.backwardWidthM
+            : -(dividerHalfWidth + layout.forwardWidthM);
+    }
+    const halfWidth = getProfileSampleRoadWidth(sample) / 2;
+    return side === 'left' ? halfWidth : -halfWidth;
 }
 
 function getProfileSampleSidewalkWidth(sample, side) {
@@ -2762,7 +2814,8 @@ function getLaneBoundarySampleOffsets(boundary, profile, profileSamples) {
         if (match) return match.offsetM;
         if (boundary.kind === 'center') return layout.dividerCenterOffsetM;
         const sideSign = Math.sign(boundary.offsetM) || 1;
-        return sideSign * Math.max(0, getProfileSampleRoadWidth(sample) / 2 - EDGE_MARKING_INSET_M);
+        const side = sideSign > 0 ? 'left' : 'right';
+        return getProfileSampleRoadEdgeOffset(sample, side) - sideSign * EDGE_MARKING_INSET_M;
     });
 }
 

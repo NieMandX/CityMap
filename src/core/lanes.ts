@@ -94,7 +94,7 @@ export function calculateRoadLaneLayout(
         ? Math.min(dividerWidthM, Math.max(0, totalDrivableWidthM - 0.5))
         : 0;
     widthM = forwardWidthM + backwardWidthM + dividerWidthM;
-    const dividerCenterOffsetM = (forwardWidthM - backwardWidthM) / 2;
+    const dividerCenterOffsetM = 0;
     const forwardLanes = normalizeLaneCount(options.forwardLanes)
         || calculateAutoLaneCount(forwardWidthM, laneWidthM);
     const backwardLanes = normalizeLaneCount(options.backwardLanes)
