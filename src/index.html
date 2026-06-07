@@ -266,25 +266,51 @@
                                 <input id="segmentLaneWidthInput" type="number" min="2" max="5" step="0.1" value="3.5">
                             </label>
                             <label>
-                                <span>Lanes</span>
+                                <span>Total lanes</span>
                                 <input id="segmentLanesInput" type="number" min="1" max="16" step="1" value="4" readonly>
+                            </label>
+                        </div>
+                        <div class="field-grid two">
+                            <label>
+                                <span>Forward lanes</span>
+                                <input id="segmentForwardLanesInput" type="number" min="1" max="16" step="1" value="2">
+                            </label>
+                            <label>
+                                <span>Backward lanes</span>
+                                <input id="segmentBackwardLanesInput" type="number" min="0" max="16" step="1" value="2">
+                            </label>
+                        </div>
+                        <div class="field-grid two">
+                            <label>
+                                <span>Divider type</span>
+                                <select id="segmentDividerTypeInput">
+                                    <option value="line">Line</option>
+                                    <option value="painted">Painted strip</option>
+                                    <option value="raised">Raised curb</option>
+                                    <option value="none">None</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>Divider m</span>
+                                <input id="segmentDividerWidthInput" type="number" min="0" max="24" step="0.25" value="0">
                             </label>
                         </div>
                         <small id="segmentLaneSummary" class="field-note">Segment lane layout</small>
                         <div class="field-grid two">
                             <label>
-                                <span>Sidewalk m</span>
-                                <input id="segmentSidewalkWidthInput" type="number" min="0" max="8" step="0.25" value="2">
+                                <span>Left sidewalk m</span>
+                                <input id="segmentSidewalkLeftWidthInput" type="number" min="0" max="8" step="0.25" value="2">
                             </label>
                             <label>
-                                <span>Override</span>
-                                <button class="action-btn" type="button" id="resetSegmentProfileBtn">Reset to road</button>
+                                <span>Right sidewalk m</span>
+                                <input id="segmentSidewalkRightWidthInput" type="number" min="0" max="8" step="0.25" value="2">
                             </label>
                         </div>
                         <div class="toggle-row">
                             <label><input id="segmentSidewalkLeftInput" type="checkbox" checked> Left sidewalk</label>
                             <label><input id="segmentSidewalkRightInput" type="checkbox" checked> Right sidewalk</label>
                         </div>
+                        <button class="action-btn full" type="button" id="resetSegmentProfileBtn">Reset selected segment</button>
                     </div>
                     <button class="action-btn full primary" type="button" id="buildSelectedRoadBtn">Build / update 3D road</button>
                 </div>

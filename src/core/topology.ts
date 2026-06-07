@@ -10,7 +10,7 @@ import {
     type Point2D,
     type RoadAxisSource,
 } from './geometry';
-import { calculateRoadLaneLayout, type TrafficDirection } from './lanes';
+import { calculateRoadLaneLayout, type DividerType, type TrafficDirection } from './lanes';
 
 const DEFAULT_MERGE_RADIUS_M = 18;
 const DEFAULT_ENDPOINT_SNAP_RADIUS_M = 10;
@@ -24,6 +24,8 @@ export type RoadTopologySource = RoadAxisSource & {
     lanes?: number;
     laneWidth?: number;
     trafficDirection?: TrafficDirection;
+    dividerWidth?: number;
+    dividerType?: DividerType;
     sidewalkWidth?: number;
     sidewalkLeft?: boolean;
     sidewalkRight?: boolean;
@@ -37,7 +39,13 @@ export type RoadTopologySegmentProfile = {
     lanes?: number;
     laneWidth?: number;
     trafficDirection?: TrafficDirection;
+    forwardLanes?: number;
+    backwardLanes?: number;
+    dividerWidth?: number;
+    dividerType?: DividerType;
     sidewalkWidth?: number;
+    sidewalkLeftWidth?: number;
+    sidewalkRightWidth?: number;
     sidewalkLeft?: boolean;
     sidewalkRight?: boolean;
 };
@@ -57,8 +65,12 @@ export type JunctionApproach = {
     side: 'start' | 'end' | 'backward' | 'forward';
     widthM: number;
     lanes: number;
+    forwardLanes: number;
+    backwardLanes: number;
     laneWidthM: number;
     trafficDirection: TrafficDirection;
+    dividerWidthM: number;
+    dividerType: DividerType;
     sidewalkWidthM: number;
     angleRad: number;
     distanceM: number;
@@ -537,19 +549,19 @@ function buildRoadApproaches(sample: SampledRoad, center: Point2D, endpointSnapR
 
     if (nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
-        return [makeApproach(sample.road.id, roadName, 'start', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'start', profile, nearest, directionBetween(nearest.point, target))];
     }
 
     if (sample.totalM - nearest.distanceM <= endpointSnapRadiusM) {
         const target = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
-        return [makeApproach(sample.road.id, roadName, 'end', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, target))];
+        return [makeApproach(sample.road.id, roadName, 'end', profile, nearest, directionBetween(nearest.point, target))];
     }
 
     const backwardTarget = pointAtDistance(sample.axis, Math.max(0, nearest.distanceM - lookahead));
     const forwardTarget = pointAtDistance(sample.axis, Math.min(sample.totalM, nearest.distanceM + lookahead));
     return [
-        makeApproach(sample.road.id, roadName, 'backward', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, backwardTarget)),
-        makeApproach(sample.road.id, roadName, 'forward', profile.widthM, profile.lanes, profile.laneWidthM, profile.trafficDirection, profile.sidewalkWidthM, nearest, directionBetween(nearest.point, forwardTarget)),
+        makeApproach(sample.road.id, roadName, 'backward', profile, nearest, directionBetween(nearest.point, backwardTarget)),
+        makeApproach(sample.road.id, roadName, 'forward', profile, nearest, directionBetween(nearest.point, forwardTarget)),
     ];
 }
 
@@ -566,19 +578,33 @@ function getRoadTopologyProfile(road: RoadTopologySource, segmentIndex: number |
         : null;
     const widthM = Math.max(1, Number(override?.width ?? road.width) || 0);
     const laneWidthM = Math.max(0.5, Number(override?.laneWidth ?? road.laneWidth) || 3.5);
-    const layout = calculateRoadLaneLayout(widthM, laneWidthM, override?.trafficDirection ?? road.trafficDirection);
+    const trafficDirection = override?.trafficDirection ?? road.trafficDirection;
+    const layout = calculateRoadLaneLayout(widthM, laneWidthM, trafficDirection, {
+        forwardLanes: override?.forwardLanes,
+        backwardLanes: override?.backwardLanes,
+        dividerWidth: override?.dividerWidth ?? road.dividerWidth,
+        dividerType: override?.dividerType ?? road.dividerType,
+    });
     const sidewalkLeft = override?.sidewalkLeft ?? road.sidewalkLeft ?? true;
     const sidewalkRight = override?.sidewalkRight ?? road.sidewalkRight ?? true;
-    const sidewalkEnabled = sidewalkLeft !== false || sidewalkRight !== false;
-    const sidewalkWidthM = sidewalkEnabled
-        ? Math.max(0, Number(override?.sidewalkWidth ?? road.sidewalkWidth) || 0)
+    const fallbackSidewalkWidth = override?.sidewalkWidth ?? road.sidewalkWidth;
+    const sidewalkLeftWidthM = sidewalkLeft !== false
+        ? Math.max(0, Number(override?.sidewalkLeftWidth ?? fallbackSidewalkWidth) || 0)
         : 0;
+    const sidewalkRightWidthM = sidewalkRight !== false
+        ? Math.max(0, Number(override?.sidewalkRightWidth ?? fallbackSidewalkWidth) || 0)
+        : 0;
+    const sidewalkWidthM = Math.max(sidewalkLeftWidthM, sidewalkRightWidthM);
 
     return {
         widthM,
         lanes: layout.totalLanes,
+        forwardLanes: layout.forwardLanes,
+        backwardLanes: layout.backwardLanes,
         laneWidthM: layout.laneWidthM,
         trafficDirection: layout.trafficDirection,
+        dividerWidthM: layout.dividerWidthM,
+        dividerType: layout.dividerType,
         sidewalkWidthM,
     };
 }
@@ -595,11 +621,7 @@ function makeApproach(
     roadId: string,
     roadName: string,
     side: JunctionApproach['side'],
-    widthM: number,
-    lanes: number,
-    laneWidthM: number,
-    trafficDirection: TrafficDirection,
-    sidewalkWidthM: number,
+    profile: ReturnType<typeof getRoadTopologyProfile>,
     nearest,
     direction: Point2D,
 ): JunctionApproach {
@@ -607,11 +629,15 @@ function makeApproach(
         roadId,
         roadName,
         side,
-        widthM,
-        lanes,
-        laneWidthM,
-        trafficDirection,
-        sidewalkWidthM,
+        widthM: profile.widthM,
+        lanes: profile.lanes,
+        forwardLanes: profile.forwardLanes,
+        backwardLanes: profile.backwardLanes,
+        laneWidthM: profile.laneWidthM,
+        trafficDirection: profile.trafficDirection,
+        dividerWidthM: profile.dividerWidthM,
+        dividerType: profile.dividerType,
+        sidewalkWidthM: profile.sidewalkWidthM,
         angleRad: Math.atan2(direction.z, direction.x),
         distanceM: nearest.distanceM,
         nearestPoint: nearest.point,

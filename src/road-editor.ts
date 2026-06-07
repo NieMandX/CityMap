@@ -16,7 +16,12 @@ import {
     sampleRoadSegment,
     splitPolylineOutsideDiscs,
 } from './core/geometry';
-import { DEFAULT_LANE_WIDTH_M, calculateRoadLaneLayout, normalizeTrafficDirection } from './core/lanes';
+import {
+    DEFAULT_LANE_WIDTH_M,
+    calculateRoadLaneLayout,
+    normalizeDividerType,
+    normalizeTrafficDirection,
+} from './core/lanes';
 import { analyzeRoadTopology } from './core/topology';
 import {
     buildCircleStrip,
@@ -40,6 +45,8 @@ const DEFAULT_SIZE_M = 600;
 const DEFAULT_ROAD_WIDTH_M = 10;
 const DEFAULT_SIDEWALK_WIDTH_M = 2;
 const DEFAULT_SEGMENT_TRANSITION = 'linear';
+const DEFAULT_DIVIDER_WIDTH_M = 0;
+const DEFAULT_DIVIDER_TYPE = 'line';
 const ROAD_BASE_Y = 0;
 const ROAD_SURFACE_Y = 0.18;
 const SIDEWALK_BASE_Y = 0;
@@ -49,6 +56,8 @@ const CURB_SURFACE_Y = 0.42;
 const ROAD_SELECTION_Y = CURB_SURFACE_Y + 0.045;
 const MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.018;
 const JUNCTION_MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.09;
+const DIVIDER_MARKING_SURFACE_Y = ROAD_SURFACE_Y + 0.028;
+const RAISED_DIVIDER_SURFACE_Y = ROAD_SURFACE_Y + 0.18;
 const CURB_WIDTH_M = 0.32;
 const EDGE_MARKING_INSET_M = 0.45;
 const LANE_MARKING_WIDTH_M = 0.13;
@@ -290,8 +299,13 @@ function collectDom() {
         segmentTrafficDirectionInput: document.getElementById('segmentTrafficDirectionInput'),
         segmentLaneWidthInput: document.getElementById('segmentLaneWidthInput'),
         segmentLanesInput: document.getElementById('segmentLanesInput'),
+        segmentForwardLanesInput: document.getElementById('segmentForwardLanesInput'),
+        segmentBackwardLanesInput: document.getElementById('segmentBackwardLanesInput'),
+        segmentDividerTypeInput: document.getElementById('segmentDividerTypeInput'),
+        segmentDividerWidthInput: document.getElementById('segmentDividerWidthInput'),
         segmentLaneSummary: document.getElementById('segmentLaneSummary'),
-        segmentSidewalkWidthInput: document.getElementById('segmentSidewalkWidthInput'),
+        segmentSidewalkLeftWidthInput: document.getElementById('segmentSidewalkLeftWidthInput'),
+        segmentSidewalkRightWidthInput: document.getElementById('segmentSidewalkRightWidthInput'),
         segmentSidewalkLeftInput: document.getElementById('segmentSidewalkLeftInput'),
         segmentSidewalkRightInput: document.getElementById('segmentSidewalkRightInput'),
         resetSegmentProfileBtn: document.getElementById('resetSegmentProfileBtn'),
@@ -601,13 +615,18 @@ function bindUi() {
     [
         dom.segmentTransitionInput,
         dom.segmentTrafficDirectionInput,
+        dom.segmentDividerTypeInput,
     ].forEach((input) => input.addEventListener('change', updateSelectedSegmentFromInspector));
     [
         dom.segmentTransitionInput,
         dom.segmentRoadWidthInput,
         dom.segmentTrafficDirectionInput,
         dom.segmentLaneWidthInput,
-        dom.segmentSidewalkWidthInput,
+        dom.segmentForwardLanesInput,
+        dom.segmentBackwardLanesInput,
+        dom.segmentDividerWidthInput,
+        dom.segmentSidewalkLeftWidthInput,
+        dom.segmentSidewalkRightWidthInput,
     ].forEach((input) => input.addEventListener('input', updateSelectedSegmentFromInspector));
     [
         dom.segmentSidewalkLeftInput,
@@ -668,20 +687,53 @@ function normalizeRoadSegmentProfile(profile, road) {
     const width = clampNumber(profile?.width ?? road?.width ?? DEFAULT_ROAD_WIDTH_M, 2, 80, road?.width || DEFAULT_ROAD_WIDTH_M);
     const laneWidth = clampNumber(profile?.laneWidth ?? road?.laneWidth ?? DEFAULT_LANE_WIDTH_M, 2, 5, road?.laneWidth || DEFAULT_LANE_WIDTH_M);
     const trafficDirection = normalizeTrafficDirection(profile?.trafficDirection ?? road?.trafficDirection);
-    const sidewalkWidth = clampNumber(profile?.sidewalkWidth ?? road?.sidewalkWidth ?? DEFAULT_SIDEWALK_WIDTH_M, 0, 8, road?.sidewalkWidth ?? DEFAULT_SIDEWALK_WIDTH_M);
     const sidewalkLeft = profile?.sidewalkLeft ?? road?.sidewalkLeft ?? true;
     const sidewalkRight = profile?.sidewalkRight ?? road?.sidewalkRight ?? true;
-    const laneLayout = calculateRoadLaneLayout(width, laneWidth, trafficDirection);
+    const legacySidewalkWidth = profile?.sidewalkWidth ?? road?.sidewalkWidth ?? DEFAULT_SIDEWALK_WIDTH_M;
+    const sidewalkLeftWidth = sidewalkLeft !== false
+        ? clampNumber(profile?.sidewalkLeftWidth ?? legacySidewalkWidth, 0, 8, Number(legacySidewalkWidth) || DEFAULT_SIDEWALK_WIDTH_M)
+        : 0;
+    const sidewalkRightWidth = sidewalkRight !== false
+        ? clampNumber(profile?.sidewalkRightWidth ?? legacySidewalkWidth, 0, 8, Number(legacySidewalkWidth) || DEFAULT_SIDEWALK_WIDTH_M)
+        : 0;
+    const sidewalkWidth = Math.max(sidewalkLeftWidth, sidewalkRightWidth);
+    const dividerType = normalizeDividerType(profile?.dividerType ?? road?.dividerType ?? DEFAULT_DIVIDER_TYPE);
+    const dividerWidth = clampNumber(profile?.dividerWidth ?? road?.dividerWidth ?? DEFAULT_DIVIDER_WIDTH_M, 0, 24, DEFAULT_DIVIDER_WIDTH_M);
+    const laneLayout = calculateRoadLaneLayout(width, laneWidth, trafficDirection, {
+        forwardLanes: profile?.forwardLanes ?? getLegacyForwardLaneCount(profile, trafficDirection),
+        backwardLanes: profile?.backwardLanes ?? getLegacyBackwardLaneCount(profile, trafficDirection),
+        dividerWidth,
+        dividerType,
+    });
     return {
         width,
         lanes: laneLayout.totalLanes,
         laneWidth,
         trafficDirection: laneLayout.trafficDirection,
+        forwardLanes: laneLayout.forwardLanes,
+        backwardLanes: laneLayout.backwardLanes,
+        dividerWidth: laneLayout.dividerWidthM,
+        dividerType: laneLayout.dividerType,
         sidewalkWidth,
+        sidewalkLeftWidth,
+        sidewalkRightWidth,
         sidewalkLeft: sidewalkLeft !== false,
         sidewalkRight: sidewalkRight !== false,
         transition: normalizeSegmentTransition(profile?.transition),
     };
+}
+
+function getLegacyForwardLaneCount(profile, trafficDirection) {
+    const lanes = Number(profile?.lanes);
+    if (!Number.isFinite(lanes) || lanes < 1) return undefined;
+    if (trafficDirection === 'one-way') return lanes;
+    return Math.max(1, Math.ceil(lanes / 2));
+}
+
+function getLegacyBackwardLaneCount(profile, trafficDirection) {
+    const lanes = Number(profile?.lanes);
+    if (!Number.isFinite(lanes) || lanes < 1 || trafficDirection === 'one-way') return undefined;
+    return Math.max(1, Math.floor(lanes / 2));
 }
 
 function normalizeSegmentTransition(value) {
@@ -732,6 +784,7 @@ function getSegmentTransitionLength(previous, current, fullLength) {
         Math.abs((Number(current.width) || 0) - (Number(previous.width) || 0)),
         Math.abs(getProfileSidewalkWidth(current, 'left') - getProfileSidewalkWidth(previous, 'left')),
         Math.abs(getProfileSidewalkWidth(current, 'right') - getProfileSidewalkWidth(previous, 'right')),
+        Math.abs(getProfileDividerWidth(current) - getProfileDividerWidth(previous)),
     );
     if (delta <= 0.01) return 0;
     const desired = Math.max(10, delta * 1.6, fullLength * 0.28);
@@ -754,15 +807,23 @@ function blendRoadProfiles(previous, current, t) {
         width: lerpNumber(previous.width, current.width, blend),
         laneWidth: lerpNumber(previous.laneWidth, current.laneWidth, blend),
         sidewalkWidth: lerpNumber(previous.sidewalkWidth, current.sidewalkWidth, blend),
-        leftSidewalkWidth,
-        rightSidewalkWidth,
+        dividerWidth: lerpNumber(getProfileDividerWidth(previous), getProfileDividerWidth(current), blend),
+        sidewalkLeftWidth: leftSidewalkWidth,
+        sidewalkRightWidth: rightSidewalkWidth,
     };
 }
 
 function getProfileSidewalkWidth(profile, side) {
     if (!profile) return 0;
     const enabled = side === 'left' ? profile.sidewalkLeft !== false : profile.sidewalkRight !== false;
-    return enabled ? Math.max(0, Number(profile.sidewalkWidth) || 0) : 0;
+    if (!enabled) return 0;
+    const widthKey = side === 'left' ? 'sidewalkLeftWidth' : 'sidewalkRightWidth';
+    return Math.max(0, Number(profile[widthKey] ?? profile.sidewalkWidth) || 0);
+}
+
+function getProfileDividerWidth(profile) {
+    if (!profile || profile.trafficDirection !== 'two-way' || profile.dividerType === 'none') return 0;
+    return Math.max(0, Number(profile.dividerWidth) || 0);
 }
 
 function lerpNumber(a, b, t) {
@@ -1257,6 +1318,7 @@ function createRoadSegmentObjects(
 
     objects.push(...createRoadSideObjects(axisPoints, road, profileSamples, label, 1, 'left', segmentIndex, normalHints));
     objects.push(...createRoadSideObjects(axisPoints, road, profileSamples, label, -1, 'right', segmentIndex, normalHints));
+    objects.push(...createRoadDividerObjects(axisPoints, road, profileSamples, label, segmentIndex, normalHints));
 
     const edgeLeft = buildRibbonMesh(
         createVariableOffsetPolyline(
@@ -1618,7 +1680,12 @@ function getJunctionApproachShape(approach, radius) {
 }
 
 function getApproachLaneLayout(approach) {
-    return calculateRoadLaneLayout(approach.widthM, approach.laneWidthM, approach.trafficDirection);
+    return calculateRoadLaneLayout(approach.widthM, approach.laneWidthM, approach.trafficDirection, {
+        forwardLanes: approach.forwardLanes,
+        backwardLanes: approach.backwardLanes,
+        dividerWidth: approach.dividerWidthM,
+        dividerType: approach.dividerType,
+    });
 }
 
 function getJunctionSidewalkWidth(hub) {
@@ -1735,10 +1802,48 @@ function addGeneratedMesh(objects, mesh) {
     }
 }
 
+function createRoadDividerObjects(axisPoints, road, profileSamples, label, segmentIndex = null, normalHints = []) {
+    const objects = [];
+    const referenceProfile = profileSamples[profileSamples.length - 1] || profileSamples[0];
+    if (referenceProfile?.trafficDirection !== 'two-way') return objects;
+    const dividerType = normalizeDividerType(referenceProfile?.dividerType);
+    const dividerWidths = profileSamples.map(getProfileDividerWidth);
+    const maxDividerWidth = maxSampleValue(dividerWidths);
+    if (dividerType === 'none' || maxDividerWidth <= EPS) return objects;
+
+    const renderWidths = dividerWidths.map((width) => {
+        if (dividerType === 'line') return Math.max(LANE_MARKING_WIDTH_M + 0.03, width);
+        return getPositiveRibbonWidth(width);
+    });
+    const material = dividerType === 'painted' || dividerType === 'line'
+        ? materials.yellowMarking
+        : materials.curb;
+    const divider = dividerType === 'raised'
+        ? buildVariableRibbonVolumeMesh(
+            axisPoints,
+            renderWidths,
+            RAISED_DIVIDER_SURFACE_Y,
+            ROAD_SURFACE_Y + 0.02,
+            material,
+            normalHints,
+        )
+        : buildVariableRibbonMesh(
+            axisPoints,
+            renderWidths,
+            DIVIDER_MARKING_SURFACE_Y,
+            material,
+            normalHints,
+        );
+    divider.name = `${label} ${dividerType} divider`;
+    divider.userData = { roadId: road.id, segmentIndex, selectable: true, kind: 'road' };
+    addGeneratedMesh(objects, divider);
+    return objects;
+}
+
 function createRoadLaneMarkings(axisPoints, road, profile, label = road.name, segmentIndex = null, profileSamples = null, normalHints = []) {
     const objects = [];
     const samples = profileSamples || createTransitionedProfileSamples(road, segmentIndex, axisPoints);
-    const layout = calculateRoadLaneLayout(profile.width, profile.laneWidth, profile.trafficDirection);
+    const layout = getLaneLayoutForProfile(profile);
     if (layout.boundaryOffsets.length === 0) return objects;
 
     layout.boundaryOffsets.forEach((boundary, index) => {
@@ -2495,9 +2600,10 @@ function getRoadVisualHalfWidth(road, segmentIndex = null) {
 }
 
 function getProfileVisualHalfWidth(profile) {
-    const sidewalkWidth = Math.max(0, Number(profile?.sidewalkWidth) || 0);
-    const leftExtension = getRoadSideExtension(profile?.sidewalkLeft, sidewalkWidth);
-    const rightExtension = getRoadSideExtension(profile?.sidewalkRight, sidewalkWidth);
+    const leftSidewalkWidth = getProfileSidewalkWidth(profile, 'left');
+    const rightSidewalkWidth = getProfileSidewalkWidth(profile, 'right');
+    const leftExtension = getRoadSideExtension(leftSidewalkWidth > EPS, leftSidewalkWidth);
+    const rightExtension = getRoadSideExtension(rightSidewalkWidth > EPS, rightSidewalkWidth);
     return Math.max(1, Number(profile?.width) || 0) / 2 + Math.max(leftExtension, rightExtension);
 }
 
@@ -2585,23 +2691,26 @@ function getRoadNormalHint(points, index, normalHints = []) {
 }
 
 function getLaneBoundarySampleOffsets(boundary, profile, profileSamples) {
-    if (boundary.kind === 'center') return profileSamples.map(() => 0);
-
-    const baseWidth = Math.max(0.01, Number(profile?.width) || 0.01);
-    const baseLaneWidth = Math.max(0.01, Number(profile?.laneWidth) || DEFAULT_LANE_WIDTH_M);
-    const baseOffset = Number(boundary.offsetM) || 0;
-    const side = Math.sign(baseOffset) || 1;
-    const laneIndexFromCenter = Math.max(1, Math.round(Math.abs(baseOffset) / baseLaneWidth));
-    const oneWayRatioFromLeft = THREE.MathUtils.clamp((baseOffset + baseWidth / 2) / baseWidth, 0.02, 0.98);
-
     return profileSamples.map((sample) => {
-        const sampleWidth = getProfileSampleRoadWidth(sample);
-        if (sample?.trafficDirection === 'one-way') {
-            return -sampleWidth / 2 + sampleWidth * oneWayRatioFromLeft;
-        }
-        const sampleLaneWidth = Math.max(0.01, Number(sample?.laneWidth) || baseLaneWidth);
-        const maxOffset = Math.max(0, sampleWidth / 2 - EDGE_MARKING_INSET_M - LANE_MARKING_WIDTH_M);
-        return side * Math.min(maxOffset, laneIndexFromCenter * sampleLaneWidth);
+        const layout = getLaneLayoutForProfile(sample);
+        const match = layout.boundaryOffsets.find((candidate) => (
+            candidate.kind === boundary.kind
+            && candidate.side === boundary.side
+            && candidate.index === boundary.index
+        ));
+        if (match) return match.offsetM;
+        if (boundary.kind === 'center') return 0;
+        const sideSign = Math.sign(boundary.offsetM) || 1;
+        return sideSign * Math.max(0, getProfileSampleRoadWidth(sample) / 2 - EDGE_MARKING_INSET_M);
+    });
+}
+
+function getLaneLayoutForProfile(profile) {
+    return calculateRoadLaneLayout(profile?.width, profile?.laneWidth, profile?.trafficDirection, {
+        forwardLanes: profile?.forwardLanes,
+        backwardLanes: profile?.backwardLanes,
+        dividerWidth: profile?.dividerWidth,
+        dividerType: profile?.dividerType,
     });
 }
 
@@ -2721,6 +2830,7 @@ function syncInspector() {
     dom.roundaboutFields.hidden = !roundabout;
     dom.nodeFields.hidden = !roadIsEditing || road.points.length === 0;
     dom.segmentFields.hidden = !roadIsEditing || getRoadSegmentCount(road) === 0;
+    dom.deleteSelectedBtn.hidden = false;
     dom.deleteSelectedBtn.disabled = !road && !roundabout;
     dom.buildRoadBtn.disabled = !road || road.points.length < 2;
     dom.buildSelectedRoadBtn.disabled = !road || road.points.length < 2;
@@ -2742,13 +2852,26 @@ function syncInspector() {
         dom.segmentTrafficDirectionInput,
         dom.segmentLaneWidthInput,
         dom.segmentLanesInput,
-        dom.segmentSidewalkWidthInput,
+        dom.segmentForwardLanesInput,
+        dom.segmentBackwardLanesInput,
+        dom.segmentDividerTypeInput,
+        dom.segmentDividerWidthInput,
+        dom.segmentSidewalkLeftWidthInput,
+        dom.segmentSidewalkRightWidthInput,
         dom.segmentSidewalkLeftInput,
         dom.segmentSidewalkRightInput,
         dom.resetSegmentProfileBtn,
     ].forEach((input) => {
         input.disabled = !selectedSegment;
     });
+    if (selectedSegment) {
+        const segmentIsTwoWay = selectedSegment.trafficDirection === 'two-way';
+        dom.segmentBackwardLanesInput.disabled = !segmentIsTwoWay;
+        dom.segmentDividerTypeInput.disabled = !segmentIsTwoWay;
+        dom.segmentDividerWidthInput.disabled = !segmentIsTwoWay || selectedSegment.dividerType === 'none';
+        dom.segmentSidewalkLeftWidthInput.disabled = selectedSegment.sidewalkLeft === false;
+        dom.segmentSidewalkRightWidthInput.disabled = selectedSegment.sidewalkRight === false;
+    }
 
     if (roundabout) {
         dom.selectionState.textContent = roundabout.name;
@@ -2774,6 +2897,7 @@ function syncInspector() {
     dom.deleteSelectedBtn.textContent = selectedPoint
         ? 'Delete selected node'
         : (selectedSegment ? 'Reset selected segment' : 'Delete selected road');
+    dom.deleteSelectedBtn.hidden = !!selectedSegment;
     const laneLayout = calculateRoadLaneLayout(road.width, road.laneWidth, road.trafficDirection);
     road.lanes = laneLayout.totalLanes;
     dom.roadNameInput.value = road.name;
@@ -2840,16 +2964,21 @@ function syncSegmentSelect(road) {
 
 function syncSegmentProfileFields(road, selectedSegment) {
     const profile = selectedSegment || getEffectiveRoadProfile(road, null);
-    const layout = calculateRoadLaneLayout(profile.width, profile.laneWidth, profile.trafficDirection);
+    const layout = getLaneLayoutForProfile(profile);
     dom.segmentTransitionInput.value = profile.transition;
     dom.segmentRoadWidthInput.value = formatNumber(profile.width);
     dom.segmentTrafficDirectionInput.value = layout.trafficDirection;
     dom.segmentLaneWidthInput.value = formatNumber(profile.laneWidth);
     dom.segmentLanesInput.value = String(layout.totalLanes);
+    dom.segmentForwardLanesInput.value = String(layout.forwardLanes);
+    dom.segmentBackwardLanesInput.value = String(layout.backwardLanes);
+    dom.segmentDividerTypeInput.value = layout.dividerType;
+    dom.segmentDividerWidthInput.value = formatNumber(layout.dividerWidthM);
     dom.segmentLaneSummary.textContent = selectedSegment
         ? formatLaneSummary(layout)
         : 'Select a segment to override its profile.';
-    dom.segmentSidewalkWidthInput.value = formatNumber(profile.sidewalkWidth);
+    dom.segmentSidewalkLeftWidthInput.value = formatNumber(profile.sidewalkLeftWidth);
+    dom.segmentSidewalkRightWidthInput.value = formatNumber(profile.sidewalkRightWidth);
     dom.segmentSidewalkLeftInput.checked = !!profile.sidewalkLeft;
     dom.segmentSidewalkRightInput.checked = !!profile.sidewalkRight;
 }
@@ -2891,19 +3020,40 @@ function updateSelectedSegmentSelectionFromInspector() {
 function updateSelectedSegmentFromInspector() {
     const road = getSelectedRoad();
     if (!road || !Number.isInteger(state.selectedSegmentIndex)) return;
+    const trafficDirection = normalizeTrafficDirection(dom.segmentTrafficDirectionInput.value);
+    const sidewalkLeft = dom.segmentSidewalkLeftInput.checked;
+    const sidewalkRight = dom.segmentSidewalkRightInput.checked;
+    const sidewalkLeftWidth = sidewalkLeft
+        ? clampNumber(dom.segmentSidewalkLeftWidthInput.value, 0, 8, road.sidewalkWidth)
+        : 0;
+    const sidewalkRightWidth = sidewalkRight
+        ? clampNumber(dom.segmentSidewalkRightWidthInput.value, 0, 8, road.sidewalkWidth)
+        : 0;
     const profile = {
         transition: normalizeSegmentTransition(dom.segmentTransitionInput.value),
         width: clampNumber(dom.segmentRoadWidthInput.value, 2, 80, road.width),
         laneWidth: clampNumber(dom.segmentLaneWidthInput.value, 2, 5, road.laneWidth),
-        trafficDirection: normalizeTrafficDirection(dom.segmentTrafficDirectionInput.value),
-        sidewalkWidth: clampNumber(dom.segmentSidewalkWidthInput.value, 0, 8, road.sidewalkWidth),
-        sidewalkLeft: dom.segmentSidewalkLeftInput.checked,
-        sidewalkRight: dom.segmentSidewalkRightInput.checked,
+        trafficDirection,
+        forwardLanes: Math.round(clampNumber(dom.segmentForwardLanesInput.value, 1, 16, 1)),
+        backwardLanes: trafficDirection === 'two-way'
+            ? Math.round(clampNumber(dom.segmentBackwardLanesInput.value, 1, 16, 1))
+            : 0,
+        dividerType: trafficDirection === 'two-way'
+            ? normalizeDividerType(dom.segmentDividerTypeInput.value)
+            : 'none',
+        dividerWidth: trafficDirection === 'two-way'
+            ? clampNumber(dom.segmentDividerWidthInput.value, 0, 24, DEFAULT_DIVIDER_WIDTH_M)
+            : 0,
+        sidewalkWidth: Math.max(sidewalkLeftWidth, sidewalkRightWidth),
+        sidewalkLeftWidth,
+        sidewalkRightWidth,
+        sidewalkLeft,
+        sidewalkRight,
     };
     const saved = setRoadSegmentProfile(road, state.selectedSegmentIndex, profile);
     if (!saved) return;
     rebuildSceneForChangedRoad(road.id);
-    setStatus(`${road.name} segment ${state.selectedSegmentIndex + 1}: ${formatNumber(saved.width)} m, ${saved.transition} transition.`);
+    setStatus(`${road.name} segment ${state.selectedSegmentIndex + 1}: ${formatNumber(saved.width)} m, ${saved.transition} transition, ${saved.lanes} lanes.`);
 }
 
 function resetSelectedSegmentProfile() {
@@ -3467,11 +3617,16 @@ function formatNumber(value) {
 }
 
 function formatLaneSummary(layout) {
-    const laneWidths = layout.laneWidthsM.map((width) => `${formatNumber(width)} m`).join(' / ');
     if (layout.trafficDirection === 'one-way') {
+        const laneWidths = layout.forwardLaneWidthsM.map((width) => `${formatNumber(width)} m`).join(' / ');
         return `${layout.totalLanes} one-way lane${layout.totalLanes === 1 ? '' : 's'} · widths ${laneWidths}`;
     }
-    return `${layout.totalLanes} lanes · ${layout.lanesPerDirection} each way · widths per direction ${laneWidths}`;
+    const forwardWidths = layout.forwardLaneWidthsM.map((width) => `${formatNumber(width)} m`).join(' / ');
+    const backwardWidths = layout.backwardLaneWidthsM.map((width) => `${formatNumber(width)} m`).join(' / ');
+    const divider = layout.dividerType === 'none'
+        ? 'no divider'
+        : `${layout.dividerType} divider ${formatNumber(layout.dividerWidthM)} m`;
+    return `${layout.totalLanes} lanes · forward ${layout.forwardLanes}, backward ${layout.backwardLanes} · ${divider} · F ${forwardWidths} · B ${backwardWidths}`;
 }
 
 function formatSmoothMode(mode) {
