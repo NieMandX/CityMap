@@ -16,6 +16,9 @@ export type RoadLaneLayout = {
     laneWidthM: number;
     directionWidthM: number;
     lanesPerDirection: number;
+    forwardWidthM: number;
+    backwardWidthM: number;
+    dividerCenterOffsetM: number;
     forwardLanes: number;
     backwardLanes: number;
     totalLanes: number;
@@ -30,6 +33,8 @@ export type RoadLaneLayout = {
 export type RoadLaneLayoutOptions = {
     forwardLanes?: unknown;
     backwardLanes?: unknown;
+    forwardWidth?: unknown;
+    backwardWidth?: unknown;
     dividerWidth?: unknown;
     dividerType?: unknown;
 };
@@ -48,11 +53,11 @@ export function calculateRoadLaneLayout(
     trafficDirection: unknown = 'two-way',
     options: RoadLaneLayoutOptions = {},
 ): RoadLaneLayout {
-    const widthM = Math.max(0.5, Number(width) || 0);
+    let widthM = Math.max(0.5, Number(width) || 0);
     const laneWidthM = Math.max(0.5, Number(laneWidth) || DEFAULT_LANE_WIDTH_M);
     const normalizedDirection = normalizeTrafficDirection(trafficDirection);
     const dividerType = normalizeDividerType(options.dividerType);
-    const dividerWidthM = normalizedDirection === 'two-way' && dividerType !== 'none'
+    let dividerWidthM = normalizedDirection === 'two-way' && dividerType !== 'none'
         ? Math.min(Math.max(0, Number(options.dividerWidth) || 0), Math.max(0, widthM - 1))
         : 0;
 
@@ -66,6 +71,9 @@ export function calculateRoadLaneLayout(
             laneWidthM,
             directionWidthM: widthM,
             lanesPerDirection: laneCount,
+            forwardWidthM: widthM,
+            backwardWidthM: 0,
+            dividerCenterOffsetM: 0,
             forwardLanes: laneCount,
             backwardLanes: 0,
             totalLanes: laneCount,
@@ -78,26 +86,39 @@ export function calculateRoadLaneLayout(
         };
     }
 
-    const drivableWidthM = Math.max(0.5, widthM - dividerWidthM);
-    const defaultDirectionWidthM = drivableWidthM / 2;
+    const fallbackDrivableWidthM = Math.max(1, widthM - dividerWidthM);
+    let forwardWidthM = normalizeDirectionWidth(options.forwardWidth) ?? fallbackDrivableWidthM / 2;
+    let backwardWidthM = normalizeDirectionWidth(options.backwardWidth) ?? fallbackDrivableWidthM / 2;
+    const totalDrivableWidthM = Math.max(1, forwardWidthM + backwardWidthM);
+    dividerWidthM = dividerType !== 'none'
+        ? Math.min(dividerWidthM, Math.max(0, totalDrivableWidthM - 0.5))
+        : 0;
+    widthM = forwardWidthM + backwardWidthM + dividerWidthM;
+    const dividerCenterOffsetM = (forwardWidthM - backwardWidthM) / 2;
     const forwardLanes = normalizeLaneCount(options.forwardLanes)
-        || calculateAutoLaneCount(defaultDirectionWidthM, laneWidthM);
+        || calculateAutoLaneCount(forwardWidthM, laneWidthM);
     const backwardLanes = normalizeLaneCount(options.backwardLanes)
-        || calculateAutoLaneCount(defaultDirectionWidthM, laneWidthM);
-    const totalLanes = forwardLanes + backwardLanes;
-    const forwardWidthM = drivableWidthM * (forwardLanes / totalLanes);
-    const backwardWidthM = drivableWidthM - forwardWidthM;
+        || calculateAutoLaneCount(backwardWidthM, laneWidthM);
     const forwardLaneWidthsM = calculateDirectionLaneWidths(forwardWidthM, laneWidthM, forwardLanes);
     const backwardLaneWidthsM = calculateDirectionLaneWidths(backwardWidthM, laneWidthM, backwardLanes);
     const laneWidthsM = mergeLaneWidths(backwardLaneWidthsM, forwardLaneWidthsM);
-    const boundaryOffsets = calculateTwoWayBoundaries(backwardLaneWidthsM, forwardLaneWidthsM, dividerWidthM, dividerType);
+    const boundaryOffsets = calculateTwoWayBoundaries(
+        backwardLaneWidthsM,
+        forwardLaneWidthsM,
+        dividerWidthM,
+        dividerType,
+        dividerCenterOffsetM,
+    );
 
     return {
         trafficDirection: normalizedDirection,
         widthM,
         laneWidthM,
-        directionWidthM: defaultDirectionWidthM,
+        directionWidthM: Math.max(forwardWidthM, backwardWidthM),
         lanesPerDirection: Math.max(forwardLanes, backwardLanes),
+        forwardWidthM,
+        backwardWidthM,
+        dividerCenterOffsetM,
         forwardLanes,
         backwardLanes,
         totalLanes: forwardLanes + backwardLanes,
@@ -134,6 +155,12 @@ function normalizeLaneCount(value: unknown) {
     return Math.min(16, Math.max(1, Math.round(number)));
 }
 
+function normalizeDirectionWidth(value: unknown) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return null;
+    return Math.max(0.5, number);
+}
+
 function mergeLaneWidths(backwardLaneWidthsM: number[], forwardLaneWidthsM: number[]) {
     if (backwardLaneWidthsM.length === forwardLaneWidthsM.length
         && backwardLaneWidthsM.every((width, index) => Math.abs(width - forwardLaneWidthsM[index]) < 0.001)) {
@@ -147,19 +174,20 @@ function calculateTwoWayBoundaries(
     forwardLaneWidthsM: number[],
     dividerWidthM: number,
     dividerType: DividerType,
+    dividerCenterOffsetM: number,
 ): LaneBoundary[] {
     const boundaries: LaneBoundary[] = [];
     if (dividerType === 'line' && dividerWidthM <= 0.01) {
-        boundaries.push({ offsetM: 0, kind: 'center', side: 'center', index: 0 });
+        boundaries.push({ offsetM: dividerCenterOffsetM, kind: 'center', side: 'center', index: 0 });
     }
 
-    let leftCursor = dividerWidthM / 2;
+    let leftCursor = dividerCenterOffsetM + dividerWidthM / 2;
     for (let i = 0; i < backwardLaneWidthsM.length - 1; i += 1) {
         leftCursor += backwardLaneWidthsM[i];
         boundaries.push({ offsetM: leftCursor, kind: 'lane', side: 'left', index: i + 1 });
     }
 
-    let rightCursor = -dividerWidthM / 2;
+    let rightCursor = dividerCenterOffsetM - dividerWidthM / 2;
     for (let i = 0; i < forwardLaneWidthsM.length - 1; i += 1) {
         rightCursor -= forwardLaneWidthsM[i];
         boundaries.push({ offsetM: rightCursor, kind: 'lane', side: 'right', index: i + 1 });

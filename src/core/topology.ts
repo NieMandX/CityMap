@@ -39,6 +39,8 @@ export type RoadTopologySegmentProfile = {
     lanes?: number;
     laneWidth?: number;
     trafficDirection?: TrafficDirection;
+    forwardWidth?: number;
+    backwardWidth?: number;
     forwardLanes?: number;
     backwardLanes?: number;
     dividerWidth?: number;
@@ -65,6 +67,8 @@ export type JunctionApproach = {
     side: 'start' | 'end' | 'backward' | 'forward';
     widthM: number;
     lanes: number;
+    forwardWidthM: number;
+    backwardWidthM: number;
     forwardLanes: number;
     backwardLanes: number;
     laneWidthM: number;
@@ -582,6 +586,8 @@ function getRoadTopologyProfile(road: RoadTopologySource, segmentIndex: number |
     const layout = calculateRoadLaneLayout(widthM, laneWidthM, trafficDirection, {
         forwardLanes: override?.forwardLanes,
         backwardLanes: override?.backwardLanes,
+        forwardWidth: override?.forwardWidth,
+        backwardWidth: override?.backwardWidth,
         dividerWidth: override?.dividerWidth ?? road.dividerWidth,
         dividerType: override?.dividerType ?? road.dividerType,
     });
@@ -599,6 +605,8 @@ function getRoadTopologyProfile(road: RoadTopologySource, segmentIndex: number |
     return {
         widthM,
         lanes: layout.totalLanes,
+        forwardWidthM: layout.forwardWidthM,
+        backwardWidthM: layout.backwardWidthM,
         forwardLanes: layout.forwardLanes,
         backwardLanes: layout.backwardLanes,
         laneWidthM: layout.laneWidthM,
@@ -631,6 +639,8 @@ function makeApproach(
         side,
         widthM: profile.widthM,
         lanes: profile.lanes,
+        forwardWidthM: profile.forwardWidthM,
+        backwardWidthM: profile.backwardWidthM,
         forwardLanes: profile.forwardLanes,
         backwardLanes: profile.backwardLanes,
         laneWidthM: profile.laneWidthM,

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CityMap editor</title>
-  <script type="module" crossorigin src="/CityMap/assets/index-DOzNQEMX.js"></script>
+  <script type="module" crossorigin src="/CityMap/assets/index-DoZDhU97.js"></script>
   <link rel="stylesheet" crossorigin href="/CityMap/assets/index-DniRoIOo.css">
 </head>
 <body>
@@ -250,7 +250,7 @@
                         </div>
                         <div class="field-grid two">
                             <label>
-                                <span>Road width m</span>
+                                <span>Total width m</span>
                                 <input id="segmentRoadWidthInput" type="number" min="2" max="80" step="0.5" value="18">
                             </label>
                             <label>
@@ -259,6 +259,16 @@
                                     <option value="two-way">Two-way</option>
                                     <option value="one-way">One-way</option>
                                 </select>
+                            </label>
+                        </div>
+                        <div class="field-grid two">
+                            <label>
+                                <span>Forward width m</span>
+                                <input id="segmentForwardWidthInput" type="number" min="0.5" max="80" step="0.25" value="9">
+                            </label>
+                            <label>
+                                <span>Backward width m</span>
+                                <input id="segmentBackwardWidthInput" type="number" min="0.5" max="80" step="0.25" value="9">
                             </label>
                         </div>
                         <div class="field-grid two">
