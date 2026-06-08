@@ -448,16 +448,24 @@ select:disabled {
 }
 
 .renderer-state,
+.scene-diagnostics,
 #coordText {
     flex: 0 0 auto;
 }
 
-.renderer-state {
+.renderer-state,
+.scene-diagnostics {
     padding: 2px 8px;
     border: 1px solid var(--road-line);
     border-radius: 999px;
     color: #dce8f2;
     background: rgba(255, 255, 255, 0.05);
+}
+
+.scene-diagnostics {
+    max-width: 280px;
+    color: #cfe3f8;
+    background: rgba(45, 140, 255, 0.08);
 }
 
 .tool-glyph {
@@ -629,6 +637,10 @@ select:disabled {
     .toolbar-group {
         padding: 0 5px;
     }
+
+    .scene-diagnostics {
+        max-width: 190px;
+    }
 }
 
 @media (max-width: 720px) {
@@ -702,6 +714,10 @@ select:disabled {
 
     .field-grid.three {
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    .scene-diagnostics {
+        display: none;
     }
 
     .compass {

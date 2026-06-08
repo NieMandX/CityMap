@@ -98,6 +98,7 @@ const state: Record<string, any> = {
     unclippedRoadIdsForCurrentRebuild: new Set(),
     dragRebuildFrame: null,
     pendingDragRoadId: null,
+    diagnosticsDirty: true,
     rendererBackend: 'pending',
     rendererForcedWebGL: false,
     rendererFallbackReason: '',
@@ -244,6 +245,7 @@ async function init() {
     rebuildScene();
     setPerspectiveView();
     startRenderLoop();
+    (window as any).__cityMapDiagnostics = getSceneDiagnostics;
     setStatus('Ready. Draw mode adds spline points on the ground plane.');
 }
 
@@ -319,6 +321,7 @@ function collectDom() {
         roundaboutLanesInput: document.getElementById('roundaboutLanesInput'),
         statusText: document.getElementById('statusText'),
         rendererState: document.getElementById('rendererState'),
+        sceneDiagnostics: document.getElementById('sceneDiagnostics'),
         coordText: document.getElementById('coordText'),
         objectCount: document.getElementById('objectCount'),
         junctionCount: document.getElementById('junctionCount'),
@@ -435,6 +438,7 @@ function syncRendererState() {
         ? `Renderer: ${state.rendererBackend}. ${state.rendererFallbackReason}`
         : `Renderer: ${state.rendererBackend}`;
     dom.editor.dataset.renderer = state.rendererBackend.toLowerCase().replaceAll(' ', '-');
+    markDiagnosticsDirty();
 }
 
 function initMaterials() {
@@ -975,6 +979,10 @@ function startRenderLoop() {
 function renderFrame() {
     controls.update();
     renderer.render(scene, camera);
+    if (state.diagnosticsDirty) {
+        syncDiagnostics();
+        state.diagnosticsDirty = false;
+    }
 }
 
 function rebuildScene(options: Record<string, any> = {}) {
@@ -3511,9 +3519,168 @@ function syncStats() {
     const junctionCount = state.topology?.junctionCount || 0;
     dom.objectCount.textContent = `${builtCount}/${roadCount} built`;
     if (dom.junctionCount) dom.junctionCount.textContent = `${junctionCount} junction${junctionCount === 1 ? '' : 's'}`;
+    markDiagnosticsDirty();
+    syncDiagnostics();
     if (roadCount === 1) {
         setPassiveStatus(`1 road, ${pointCount} nodes, ${state.roundabouts.length} roundabouts.`);
     }
+}
+
+function markDiagnosticsDirty() {
+    state.diagnosticsDirty = true;
+}
+
+function syncDiagnostics() {
+    if (!dom.sceneDiagnostics) return;
+    const diagnostics = getSceneDiagnostics();
+    dom.sceneDiagnostics.textContent = formatDiagnosticsBadge(diagnostics);
+    dom.sceneDiagnostics.title = formatDiagnosticsTitle(diagnostics);
+    syncDiagnosticsDataset(diagnostics);
+}
+
+function getSceneDiagnostics() {
+    const generated = collectSceneResourceStats([roadGroup, helperGroup, exportGroup]);
+    const rendererInfo = renderer?.info || {};
+    const rendererMemory = rendererInfo.memory || {};
+    const rendererRender = rendererInfo.render || {};
+    const roadCount = state.roads.length;
+    const builtRoadCount = state.roads.filter((road) => road.built).length;
+    const pointCount = state.roads.reduce((sum, road) => sum + road.points.length, 0);
+    return {
+        backend: state.rendererBackend,
+        roads: roadCount,
+        builtRoads: builtRoadCount,
+        roundabouts: state.roundabouts.length,
+        points: pointCount,
+        junctions: state.topology?.junctionCount || 0,
+        connections: state.topology?.connectionCount || 0,
+        queuedSharedMaterialDisposals: queuedSharedMaterialDisposals.size,
+        generated,
+        rendererMemory: {
+            geometries: normalizeFiniteNumber(rendererMemory.geometries),
+            textures: normalizeFiniteNumber(rendererMemory.textures),
+        },
+        rendererRender: {
+            calls: normalizeFiniteNumber(rendererRender.calls),
+            triangles: normalizeFiniteNumber(rendererRender.triangles),
+            lines: normalizeFiniteNumber(rendererRender.lines),
+            points: normalizeFiniteNumber(rendererRender.points),
+        },
+    };
+}
+
+function collectSceneResourceStats(groups) {
+    const rootSet = new Set(groups.filter(Boolean));
+    const geometrySet = new Set();
+    const materialSet = new Set();
+    const textureSet = new Set();
+    const stats = {
+        objects: 0,
+        meshes: 0,
+        lines: 0,
+        geometries: 0,
+        materials: 0,
+        textures: 0,
+        vertices: 0,
+        triangles: 0,
+    };
+
+    groups.forEach((group) => {
+        group?.traverse?.((obj) => {
+            if (rootSet.has(obj)) return;
+            stats.objects += 1;
+            if (obj.isMesh) stats.meshes += 1;
+            if (obj.isLine || obj.isLineSegments) stats.lines += 1;
+
+            const geometry = obj.geometry;
+            if (geometry && !geometrySet.has(geometry)) {
+                geometrySet.add(geometry);
+                const position = geometry.getAttribute?.('position');
+                const index = geometry.getIndex?.();
+                const vertexCount = normalizeFiniteNumber(position?.count) || 0;
+                stats.vertices += vertexCount;
+                if (obj.isMesh) {
+                    const triangleCount = index ? Math.floor((normalizeFiniteNumber(index.count) || 0) / 3) : Math.floor(vertexCount / 3);
+                    stats.triangles += triangleCount;
+                }
+            }
+
+            collectMaterialResourceStats(obj.material, materialSet, textureSet);
+        });
+    });
+
+    stats.geometries = geometrySet.size;
+    stats.materials = materialSet.size;
+    stats.textures = textureSet.size;
+    return stats;
+}
+
+function collectMaterialResourceStats(material, materialSet, textureSet) {
+    if (!material) return;
+    if (Array.isArray(material)) {
+        material.forEach((item) => collectMaterialResourceStats(item, materialSet, textureSet));
+        return;
+    }
+    materialSet.add(material);
+    Object.values(material).forEach((value) => {
+        const candidate = value as any;
+        if (candidate?.isTexture) textureSet.add(candidate);
+    });
+}
+
+function normalizeFiniteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function formatDiagnosticsBadge(diagnostics) {
+    const generated = diagnostics.generated;
+    const rendererGeometries = diagnostics.rendererMemory.geometries ?? generated.geometries;
+    const rendererTextures = diagnostics.rendererMemory.textures ?? generated.textures;
+    return `Gen ${generated.objects} obj · ${generated.geometries}g/${generated.materials}m · GPU ${rendererGeometries}g/${rendererTextures}t`;
+}
+
+function formatDiagnosticsTitle(diagnostics) {
+    const generated = diagnostics.generated;
+    const rendererMemory = diagnostics.rendererMemory;
+    const rendererRender = diagnostics.rendererRender;
+    return [
+        `Roads: ${diagnostics.builtRoads}/${diagnostics.roads} built, ${diagnostics.points} nodes, ${diagnostics.roundabouts} roundabouts`,
+        `Topology: ${diagnostics.junctions} junctions, ${diagnostics.connections} connections`,
+        `Generated: ${generated.objects} objects, ${generated.meshes} meshes, ${generated.lines} lines`,
+        `Generated resources: ${generated.geometries} geometries, ${generated.materials} materials, ${generated.textures} textures`,
+        `Generated geometry: ${generated.vertices} vertices, ${generated.triangles} triangles`,
+        `Renderer ${diagnostics.backend}: ${formatNullableNumber(rendererMemory.geometries)} geometries, ${formatNullableNumber(rendererMemory.textures)} textures`,
+        `Last draw: ${formatNullableNumber(rendererRender.calls)} calls, ${formatNullableNumber(rendererRender.triangles)} triangles, ${formatNullableNumber(rendererRender.lines)} lines`,
+        `Queued material cleanup: ${diagnostics.queuedSharedMaterialDisposals}`,
+    ].join('\n');
+}
+
+function formatNullableNumber(value) {
+    return value === null ? 'n/a' : String(value);
+}
+
+function syncDiagnosticsDataset(diagnostics) {
+    const dataset = dom.sceneDiagnostics.dataset;
+    dataset.generatedObjects = String(diagnostics.generated.objects);
+    dataset.generatedMeshes = String(diagnostics.generated.meshes);
+    dataset.generatedLines = String(diagnostics.generated.lines);
+    dataset.generatedGeometries = String(diagnostics.generated.geometries);
+    dataset.generatedMaterials = String(diagnostics.generated.materials);
+    dataset.generatedTextures = String(diagnostics.generated.textures);
+    dataset.generatedVertices = String(diagnostics.generated.vertices);
+    dataset.generatedTriangles = String(diagnostics.generated.triangles);
+    dataset.rendererGeometries = formatNullableNumber(diagnostics.rendererMemory.geometries);
+    dataset.rendererTextures = formatNullableNumber(diagnostics.rendererMemory.textures);
+    dataset.rendererCalls = formatNullableNumber(diagnostics.rendererRender.calls);
+    dataset.rendererTriangles = formatNullableNumber(diagnostics.rendererRender.triangles);
+    dataset.roads = String(diagnostics.roads);
+    dataset.builtRoads = String(diagnostics.builtRoads);
+    dataset.roundabouts = String(diagnostics.roundabouts);
+    dataset.points = String(diagnostics.points);
+    dataset.junctions = String(diagnostics.junctions);
+    dataset.connections = String(diagnostics.connections);
+    dataset.backend = diagnostics.backend;
 }
 
 function applyBoundsFromInputs() {
@@ -3564,6 +3731,7 @@ function setUnderlayTexture(texture, label) {
     underlayMesh.position.y = -0.03;
     scene.add(underlayMesh);
     dom.underlayState.textContent = label;
+    markDiagnosticsDirty();
 }
 
 function makeProceduralUnderlayTexture(mode) {
