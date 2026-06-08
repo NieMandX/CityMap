@@ -69,6 +69,7 @@ const CROSSWALK_STRIPE_GAP_M = 0.78;
 const STOP_BAR_WIDTH_M = 0.52;
 const CONFLICT_GUIDE_WIDTH_M = 0.16;
 const materials: Record<string, any> = {};
+const queuedSharedMaterialDisposals = new Set<any>();
 const dom: Record<string, any> = {};
 const state: Record<string, any> = {
     mode: 'select',
@@ -984,6 +985,7 @@ function rebuildScene(options: Record<string, any> = {}) {
     const excludedTopologyRoadIds = new Set(Array.isArray(options.excludeTopologyRoadIds) ? options.excludeTopologyRoadIds.filter(Boolean) : []);
     const unclippedRoadIds = new Set(Array.isArray(options.unclippedRoadIds) ? options.unclippedRoadIds.filter(Boolean) : []);
     const preserveUnrelatedTopologyObjects = options.preserveUnrelatedTopologyObjects === true && excludedTopologyRoadIds.size > 0;
+    const disposeSharedMaterials = options.disposeSharedMaterials !== false;
     const syncUi = options.syncUi !== false;
     const preservedRoadTopologyObjects = preserveUnrelatedTopologyObjects
         ? detachPreservedTopologyObjects(roadGroup, excludedTopologyRoadIds)
@@ -995,6 +997,7 @@ function rebuildScene(options: Record<string, any> = {}) {
     clearGroup(roadGroup);
     clearGroup(helperGroup);
     clearGroup(exportGroup);
+    flushRendererObjectCaches({ disposeSharedMaterials });
     if (refreshTopology) {
         state.topology = analyzeRoadTopology(state.roads, {
             mergeRadiusM: 18,
@@ -1057,6 +1060,7 @@ function rebuildSceneForDrag(changedRoadId = null) {
         excludeTopologyRoadIds: changedRoadIds,
         unclippedRoadIds: changedRoadIds,
         preserveUnrelatedTopologyObjects: changedRoadIds.length > 0,
+        disposeSharedMaterials: false,
         syncUi: false,
     });
 }
@@ -1072,6 +1076,7 @@ function rebuildChangedRoadSceneForDrag(roadId) {
     removeGroupObjects(roadGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
     removeGroupObjects(helperGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
     clearGroup(exportGroup);
+    flushRendererObjectCaches({ disposeSharedMaterials: false });
 
     state.clipRoadsForCurrentRebuild = true;
     state.renderTopologyForCurrentRebuild = renderTopology;
@@ -1132,6 +1137,7 @@ function prepareRoadMovePreview(roadId) {
     removeGroupObjects(roadGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
     removeGroupObjects(helperGroup, (obj) => isRoadOwnedSceneObject(obj, roadId) || isTopologyObjectAffectedByRoad(obj, roadId));
     clearGroup(exportGroup);
+    flushRendererObjectCaches();
 
     state.clipRoadsForCurrentRebuild = true;
     state.renderTopologyForCurrentRebuild = renderTopology;
@@ -2258,6 +2264,7 @@ function disposeObject(obj) {
         child.geometry?.dispose?.();
         disposeObjectMaterial(child.material);
     });
+    obj.clear?.();
 }
 
 function disposeObjectMaterial(material: any) {
@@ -2266,7 +2273,10 @@ function disposeObjectMaterial(material: any) {
         material.forEach(disposeObjectMaterial);
         return;
     }
-    if (isSharedMaterial(material)) return;
+    if (isSharedMaterial(material)) {
+        queuedSharedMaterialDisposals.add(material);
+        return;
+    }
     Object.values(material).forEach((value) => {
         const candidate = value as any;
         if (candidate?.isTexture) candidate.dispose?.();
@@ -2276,6 +2286,24 @@ function disposeObjectMaterial(material: any) {
 
 function isSharedMaterial(material: any) {
     return Object.values(materials).includes(material);
+}
+
+function flushRendererObjectCaches(options: { disposeSharedMaterials?: boolean } = {}) {
+    if (options.disposeSharedMaterials !== false) {
+        flushQueuedSharedMaterialRenderObjects();
+    }
+    const rendererAny = renderer as any;
+    rendererAny?.renderLists?.dispose?.();
+    rendererAny?._renderLists?.dispose?.();
+    rendererAny?._objects?.dispose?.();
+    rendererAny?.info?.reset?.();
+}
+
+function flushQueuedSharedMaterialRenderObjects() {
+    if (!queuedSharedMaterialDisposals.size) return;
+    const materialsToDispose = Array.from(queuedSharedMaterialDisposals);
+    queuedSharedMaterialDisposals.clear();
+    materialsToDispose.forEach((material) => material.dispose?.());
 }
 
 function onPointerDown(event) {
@@ -3745,6 +3773,7 @@ async function exportGlb() {
         setStatus(`GLB export failed: ${error?.message || error}`);
     } finally {
         clearGroup(exportGroup);
+        flushRendererObjectCaches();
     }
 }
 
