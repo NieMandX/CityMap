@@ -2247,7 +2247,8 @@ function createRoundaboutObjects(roundabout) {
 
 function clearGroup(group) {
     while (group.children.length) {
-        const obj = group.children.pop();
+        const obj = group.children[group.children.length - 1];
+        group.remove(obj);
         disposeObject(obj);
     }
 }
@@ -2255,7 +2256,26 @@ function clearGroup(group) {
 function disposeObject(obj) {
     obj.traverse?.((child) => {
         child.geometry?.dispose?.();
+        disposeObjectMaterial(child.material);
     });
+}
+
+function disposeObjectMaterial(material: any) {
+    if (!material) return;
+    if (Array.isArray(material)) {
+        material.forEach(disposeObjectMaterial);
+        return;
+    }
+    if (isSharedMaterial(material)) return;
+    Object.values(material).forEach((value) => {
+        const candidate = value as any;
+        if (candidate?.isTexture) candidate.dispose?.();
+    });
+    material.dispose?.();
+}
+
+function isSharedMaterial(material: any) {
+    return Object.values(materials).includes(material);
 }
 
 function onPointerDown(event) {
